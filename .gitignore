@@ -1,0 +1,86 @@
+# Based on the GitHub Python .gitignore template (https://github.com/github/gitignore/blob/main/Python.gitignore).
+# Many entries below come from the template and may not apply to this project — they are kept
+# as a reference baseline. Project-specific entries are at the bottom.
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[codz]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+nosetests.xml
+coverage.xml
+*.cover
+*.py.cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# UV
+#   uv.lock is committed for reproducible builds — do not ignore.
+# uv.lock
+
+# Environments
+.env
+.envrc
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Project specific
+# Scryfall / EDHREC SQLite cache — auto-generated on first run
+.cache/
+# Personal collection CSVs — excluded intentionally
+collections/
+# Personal decklists — excluded intentionally; add your own under decks/<format>/
+decks/

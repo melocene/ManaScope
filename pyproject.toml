@@ -1,0 +1,78 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "manascope"
+version = "0.1.0"
+description = "MTG deck analysis toolkit — mana base, EDHREC review, collection verification."
+readme = "README.md"
+requires-python = ">=3.14"
+license = "AGPL-3.0-or-later"
+authors = [{ name = "melocene" }]
+classifiers = [
+    "Private :: Do Not Upload",
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Games/Entertainment",
+    "Topic :: Utilities",
+    "Typing :: Typed",
+]
+dependencies = [
+    "requests>=2.33.1",
+    "rich>=14.3.3",
+    "typer>=0.24.1",
+]
+
+[project.urls]
+Homepage   = "https://github.com/melocene/ManaScope"
+Repository = "https://github.com/melocene/ManaScope"
+Source     = "https://github.com/melocene/ManaScope"
+Issues     = "https://github.com/melocene/ManaScope/issues"
+
+[project.scripts]
+manascope = "manascope.cli:app"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.9",
+    "ty>=0.0.29",
+    "pytest>=9.0.3",
+    "pytest-mock>=3.15.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/manascope"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+# extend-select adds rule sets on top of `ruff` defaults.
+extend-select = [
+    "I",   # isort — enforces consistent import ordering and grouping
+    "UP",  # pyupgrade — modernises syntax to match the target Python version (e.g. Optional[X] → X | None)
+    "B",   # flake8-bugbear — catches common bugs and design issues that pyflakes misses
+    "SIM", # flake8-simplify — suggests simpler equivalent expressions
+    "S",   # flake8-bandit — security checks (relevant since this tool makes HTTP requests)
+    "D1",  # pydocstring — flags missing docstrings on modules, classes, and functions
+    "D3",  # pydocstring — enforces triple double-quotes for all docstrings
+    "RUF", # Ruff-native rules — curated extra checks not covered by the above rule sets
+]
+ignore = [
+    "D105", # Magic method docstrings (e.g. __repr__, __str__) — rarely useful
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "S101", # S101: assert is expected in tests
+    "D",    # D: docstrings not required in tests
+]
