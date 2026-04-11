@@ -11,6 +11,8 @@ from manascope.collection import (
     RARITY_ORDER,
     load_collection,
     load_collection_names,
+    load_collections,
+    load_collections_names,
     lookup_rarity,
 )
 
@@ -325,4 +327,147 @@ class TestLoadCsvCollectionNames:
 
     def test_empty(self, empty_csv_file: Path) -> None:
         names = load_collection_names(empty_csv_file)
+        assert names == set()
+
+
+# ── load_collections (multi-file merge) ──────────────────────────────────
+
+
+@pytest.fixture()
+def csv_collection_a(tmp_path: Path) -> Path:
+    """First CSV: Sol Ring (x1), Plains (x4), Lightning Bolt (x2)."""
+    lines = [
+        MANABOX_HEADER,
+        _csv_row("Sol Ring", quantity=1, set_code="C21", cn="263"),
+        _csv_row("Plains", quantity=4, set_code="ONE", cn="267"),
+        _csv_row("Lightning Bolt", quantity=2, set_code="M10", cn="146"),
+    ]
+    p = tmp_path / "collection_a.csv"
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
+@pytest.fixture()
+def csv_collection_b(tmp_path: Path) -> Path:
+    """Second CSV: Sol Ring (x1), Swords to Plowshares (x3), DFC card (x1)."""
+    lines = [
+        MANABOX_HEADER,
+        _csv_row("Sol Ring", quantity=1, set_code="C20", cn="217"),
+        _csv_row("Swords to Plowshares", quantity=3, set_code="ICE", cn="54"),
+        _csv_row(
+            "Archangel Avacyn // Avacyn, the Purifier",
+            quantity=1,
+            set_code="SOI",
+            cn="5",
+        ),
+    ]
+    p = tmp_path / "collection_b.csv"
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
+class TestLoadCollections:
+    def test_single_file_delegates(self, csv_collection_a: Path) -> None:
+        """A single-element list behaves identically to load_collection."""
+        multi = load_collections([csv_collection_a])
+        single = load_collection(csv_collection_a)
+        assert multi == single
+
+    def test_merges_unique_cards(self, csv_collection_a: Path, csv_collection_b: Path) -> None:
+        coll = load_collections([csv_collection_a, csv_collection_b])
+        assert "lightning bolt" in coll
+        assert "swords to plowshares" in coll
+        assert "plains" in coll
+
+    def test_sums_counts_for_overlapping_cards(
+        self, csv_collection_a: Path, csv_collection_b: Path
+    ) -> None:
+        coll = load_collections([csv_collection_a, csv_collection_b])
+        # Sol Ring appears in both files with quantity 1 each
+        assert coll["sol ring"]["count"] == 2
+
+    def test_non_overlapping_counts_preserved(
+        self, csv_collection_a: Path, csv_collection_b: Path
+    ) -> None:
+        coll = load_collections([csv_collection_a, csv_collection_b])
+        assert coll["plains"]["count"] == 4
+        assert coll["swords to plowshares"]["count"] == 3
+        assert coll["lightning bolt"]["count"] == 2
+
+    def test_dfc_front_face_indexed_across_files(
+        self, csv_collection_a: Path, csv_collection_b: Path
+    ) -> None:
+        """DFC front-face key should be present when DFC is in a secondary file."""
+        coll = load_collections([csv_collection_a, csv_collection_b])
+        assert "archangel avacyn // avacyn, the purifier" in coll
+        assert "archangel avacyn" in coll
+
+    def test_empty_file_does_not_break_merge(
+        self, csv_collection_a: Path, empty_csv_file: Path
+    ) -> None:
+        coll = load_collections([csv_collection_a, empty_csv_file])
+        assert "sol ring" in coll
+        assert coll["sol ring"]["count"] == 1
+
+    def test_two_empty_files(self, empty_csv_file: Path, tmp_path: Path) -> None:
+        empty2 = tmp_path / "empty2.csv"
+        empty2.write_text(MANABOX_HEADER + "\n", encoding="utf-8")
+        coll = load_collections([empty_csv_file, empty2])
+        assert coll == {}
+
+    def test_does_not_mutate_source_dicts(
+        self, csv_collection_a: Path, csv_collection_b: Path
+    ) -> None:
+        """Merging should not modify the dict returned by load_collection."""
+        original = load_collection(csv_collection_a)
+        original_sol_count = original["sol ring"]["count"]
+        load_collections([csv_collection_a, csv_collection_b])
+        assert original["sol ring"]["count"] == original_sol_count
+
+    def test_mixed_csv_and_json(self, csv_collection_a: Path, collection_file: Path) -> None:
+        """Merge works across different file formats (CSV + JSON)."""
+        coll = load_collections([csv_collection_a, collection_file])
+        # Sol Ring is in both files (qty 1 each)
+        assert coll["sol ring"]["count"] == 2
+        # CSV-only card
+        assert "plains" in coll
+        # JSON collection also has Plains (qty 4) — plus CSV (qty 4) = 8
+        assert coll["plains"]["count"] == 8
+        # JSON-only DFC
+        assert "archangel avacyn" in coll
+
+    def test_three_files(
+        self, csv_collection_a: Path, csv_collection_b: Path, tmp_path: Path
+    ) -> None:
+        """Verify merging works with more than two files."""
+        lines = [
+            MANABOX_HEADER,
+            _csv_row("Sol Ring", quantity=5, set_code="2XM", cn="274"),
+        ]
+        p = tmp_path / "collection_c.csv"
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        coll = load_collections([csv_collection_a, csv_collection_b, p])
+        # 1 + 1 + 5
+        assert coll["sol ring"]["count"] == 7
+
+
+class TestLoadCollectionsNames:
+    def test_returns_union_of_names(self, csv_collection_a: Path, csv_collection_b: Path) -> None:
+        names = load_collections_names([csv_collection_a, csv_collection_b])
+        assert isinstance(names, set)
+        assert "sol ring" in names
+        assert "lightning bolt" in names
+        assert "swords to plowshares" in names
+        assert "plains" in names
+        assert "archangel avacyn" in names
+
+    def test_single_file_matches_original(self, csv_collection_a: Path) -> None:
+        multi = load_collections_names([csv_collection_a])
+        single = load_collection_names(csv_collection_a)
+        assert multi == single
+
+    def test_empty_files(self, empty_csv_file: Path, tmp_path: Path) -> None:
+        empty2 = tmp_path / "empty2.csv"
+        empty2.write_text(MANABOX_HEADER + "\n", encoding="utf-8")
+        names = load_collections_names([empty_csv_file, empty2])
         assert names == set()

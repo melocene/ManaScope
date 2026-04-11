@@ -110,7 +110,9 @@ def analyze(
 @app.command()
 def review(
     decklist: Annotated[str, typer.Option(help="Path to the decklist .txt file.")],
-    collection: Annotated[str | None, typer.Option(help="Path to collection CSV path.")] = None,
+    collection: Annotated[
+        list[str] | None, typer.Option(help="Path(s) to collection CSV file(s).")
+    ] = None,
     top: Annotated[int, typer.Option(help="Number of EDHREC cards to evaluate.")] = 80,
     fmt: Annotated[str | None, typer.Option("--format", help="Override format.")] = None,
     no_candidates: Annotated[
@@ -146,7 +148,9 @@ def review(
 @app.command()
 def pipeline(
     decklist: Annotated[str, typer.Option(help="Path to the decklist .txt file.")],
-    collection: Annotated[str | None, typer.Option(help="Path to collection CSV path.")] = None,
+    collection: Annotated[
+        list[str] | None, typer.Option(help="Path(s) to collection CSV file(s).")
+    ] = None,
     fmt: Annotated[
         str | None,
         typer.Option("--format", help="Override format (commander|brawl|standardbrawl)."),
@@ -243,7 +247,7 @@ def prime(
 @app.command()
 def verify(
     decklist: Annotated[str, typer.Option(help="Path to the decklist .txt file.")],
-    collection: Annotated[str, typer.Option(help="Path to collection CSV path.")],
+    collection: Annotated[list[str], typer.Option(help="Path(s) to collection CSV file(s).")],
     cache: CachePath = DB_PATH,
 ) -> None:
     """Check which decklist cards are missing from the MTGA collection."""
@@ -253,12 +257,17 @@ def verify(
         BASIC_LANDS,
         RARITY_ORDER,
         load_collection_names,
+        load_collections_names,
         lookup_rarity,
     )
     from manascope.deck import parse_decklist
 
     entries = parse_decklist(decklist)
-    owned = load_collection_names(Path(collection))
+    owned = (
+        load_collections_names([Path(p) for p in collection])
+        if len(collection) > 1
+        else load_collection_names(Path(collection[0]))
+    )
 
     cache_conn: sqlite3.Connection | None = None
     if Path(cache).exists():
