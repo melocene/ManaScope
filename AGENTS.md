@@ -24,8 +24,9 @@
   - `--top INTEGER`: EDHREC cards to evaluate, default 80 — `review`, `pipeline`, `prime`
 
 ## Decklist Format Rules
-- **Commander (Paper)**: Line 1 = Commander (no headers). Full names (`Front // Back`) for DFCs. Exactly 100 cards.
-- **Brawl / Standard Brawl (Arena)**: `Commander` and `Deck` headers required. Front-face names only for DFCs/Adventures. Exactly 100 cards.
+- **Line format** (all formats): `<qty> <name> (<set>) <collector#>` — e.g. `1 Isolated Chapel (OTC) 301`. Pick any owned printing unless directed otherwise.
+- **Commander (Paper)**: Line 1 = Commander (no headers). Full DFC names (`Front // Back`). Exactly 100 cards.
+- **Brawl / Standard Brawl (Arena)**: `Commander` and `Deck` headers required. Front-face only for DFCs/Adventures. Exactly 100 cards.
 
 ## Tools & Layout
 - **Pathing**: Prefix all file paths with `ManaScope/` in read/write/search tools. In terminal, confirm working directory first.
