@@ -26,7 +26,8 @@
 ## Decklist Format Rules
 - **Line format** (all formats): `<qty> <name> (<set>) <collector#>` — e.g. `1 Isolated Chapel (OTC) 301`. Pick any owned printing unless directed otherwise.
 - **Commander (Paper)**: Line 1 = Commander (no headers). Full DFC names (`Front // Back`). Exactly 100 cards.
-- **Brawl / Standard Brawl (Arena)**: `Commander` and `Deck` headers required. Front-face only for DFCs/Adventures. Exactly 100 cards.
+- **Brawl**: `Commander` and `Deck` headers required. Front-face only for DFCs/Adventures. Exactly 100 cards.
+- **Standard Brawl (Arena)**: `Commander` and `Deck` headers required. Front-face only for DFCs/Adventures. Exactly 60 cards.
 
 ## Tools & Layout
 - **Pathing**: Prefix all file paths with `ManaScope/` in read/write/search tools. In terminal, confirm working directory first.
