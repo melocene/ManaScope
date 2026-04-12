@@ -28,9 +28,10 @@ from manascope import DB_PATH, __version__
 _notice_console = Console(stderr=True)
 
 
-def _print_notice() -> None:
-    """Print the unofficial fan project notice to stderr, only when stderr is a TTY."""
-    if not _notice_console.is_terminal:
+def _print_notice(machine_readable: bool = False) -> None:
+    """Print the unofficial fan project notice to stderr, only when stderr is a TTY
+    and output is not machine-readable."""
+    if machine_readable or not _notice_console.is_terminal:
         return
     _notice_console.print(
         "ManaScope is an unofficial fan project · Data from Scryfall & EDHREC · "
@@ -66,7 +67,6 @@ def main(
     ] = False,
 ) -> None:
     """MTG deck analysis toolkit."""
-    _print_notice()
 
 
 CachePath = Annotated[Path, typer.Option("--cache", help="Path to SQLite cache database.")]
@@ -92,6 +92,7 @@ def analyze(
     cache: CachePath = DB_PATH,
 ) -> None:
     """Full mana-base and deck analysis."""
+    _print_notice(machine_readable=agent or json_flag)
     from manascope.analyze import run
 
     run(
@@ -127,6 +128,7 @@ def review(
     cache: CachePath = DB_PATH,
 ) -> None:
     """EDHREC cross-reference and owned-card gap analysis."""
+    _print_notice(machine_readable=agent or json_flag)
     from manascope.review import run
 
     run(
@@ -159,6 +161,7 @@ def pipeline(
     cache: CachePath = DB_PATH,
 ) -> None:
     """Run a combined JSON pipeline analysis for AI agents."""
+    _print_notice(machine_readable=True)
     import json
 
     from manascope.analyze import run as run_analyze
@@ -200,6 +203,7 @@ def prime(
     cache: CachePath = DB_PATH,
 ) -> None:
     """Prime the Scryfall cache with EDHREC-recommended cards."""
+    _print_notice(machine_readable=quiet)
     from manascope import edhrec as ec
     from manascope import scryfall as sc
 
@@ -251,6 +255,7 @@ def verify(
     cache: CachePath = DB_PATH,
 ) -> None:
     """Check which decklist cards are missing from the MTGA collection."""
+    _print_notice()
     import sqlite3
 
     from manascope.collection import (
@@ -359,6 +364,7 @@ def lookup(
     cache: CachePath = DB_PATH,
 ) -> None:
     """Look up cards by name (cache-first, fetches on miss)."""
+    _print_notice(machine_readable=json_flag or quiet)
     import json as json_mod
 
     from manascope import scryfall as sc
@@ -404,6 +410,7 @@ def edhrec(
     cache: CachePath = DB_PATH,
 ) -> None:
     """Display EDHREC commander data (type dist, curve, synergy, combos, themes)."""
+    _print_notice(machine_readable=json_flag or quiet)
     from manascope import edhrec as ec
 
     commander_input = " ".join(commander)
