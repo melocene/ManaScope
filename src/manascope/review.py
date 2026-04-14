@@ -500,7 +500,7 @@ def run_collection_section(
 
 def run(
     decklist: str,
-    collection: str | None = None,
+    collection: str | list[str] | None = None,
     top: int = 80,
     fmt: str | None = None,
     no_candidates: bool = False,
@@ -568,9 +568,18 @@ def run(
     owned: dict[str, dict] = {}
     if collection:
         try:
-            owned = load_collection(Path(collection))
-            if verbose:
-                print(f"Collection: {len(owned):,} unique cards loaded from {collection}")
+            if isinstance(collection, list):
+                from manascope.collection import load_collections
+
+                owned = load_collections([Path(p) for p in collection])
+                if verbose:
+                    print(
+                        f"Collection: {len(owned):,} unique cards loaded from {len(collection)} file(s)"
+                    )
+            else:
+                owned = load_collection(Path(collection))
+                if verbose:
+                    print(f"Collection: {len(owned):,} unique cards loaded from {collection}")
         except OSError as e:
             print(f"WARNING: could not read collection file: {e}", file=sys.stderr)
 

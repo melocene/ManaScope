@@ -83,6 +83,31 @@ def load_collection_names(path: Path) -> set[str]:
     return set(load_collection(path).keys())
 
 
+def load_collections(paths: list[Path]) -> dict[str, dict]:
+    """Merge collections from multiple files into one ``{name_lower: entry_dict}``.
+
+    When the same card name appears in more than one file the ``count``
+    values are summed.  If only one path is provided the call delegates
+    directly to :func:`load_collection`.
+    """
+    if len(paths) == 1:
+        return load_collection(paths[0])
+
+    merged: dict[str, dict] = {}
+    for path in paths:
+        for key, entry in load_collection(path).items():
+            if key in merged:
+                merged[key]["count"] += entry.get("count", 1)
+            else:
+                merged[key] = dict(entry)
+    return merged
+
+
+def load_collections_names(paths: list[Path]) -> set[str]:
+    """Return the set of owned card names (lowercased) across multiple collection files."""
+    return set(load_collections(paths).keys())
+
+
 def lookup_rarity(conn: sqlite3.Connection, card_name: str) -> str:
     """Return the rarity string for *card_name* from the Scryfall cache.
 
