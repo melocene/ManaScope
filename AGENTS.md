@@ -3,8 +3,8 @@
 ## Core Rules
 - **Source of Truth**: `decks/<format>/<deck>.txt`. Cache is NOT authoritative.
 - **Commands**: Always use `uv run manascope <cmd>`. NEVER `python`.
-- **Python 3 Exception Syntax**: Both `except (TypeError, ValueError):` and `except TypeError, ValueError:` are valid Python 3 — the bare-comma form creates an implicit tuple. Do NOT flag bare-comma except clauses as bugs or Python 2 remnants.
 - **Validation**: `uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv run ty check src/ && uv run python -m pytest tests/`
+- **Slow tests**: the ReDoS regression suite is marked `slow` and skipped by default. Run it on demand with `uv run python -m pytest tests/ -m slow`.
 - **Card Data**: ALL attributes MUST come from `uv run manascope lookup <name> --brief --json` in the current session. NEVER assume behavior from memory/name/art.
   - Always read `type_line`, `land_speed`, and `subtypes`. Never infer land entry conditions. Evaluate additive type modifications carefully.
 - **Batching**: All needed names are already in context from prior tool outputs — collect them and call once. NEVER make repeated single-item calls.

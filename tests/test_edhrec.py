@@ -624,7 +624,7 @@ class TestTags:
 
     def test_sorted_by_count_descending(self, edhrec_data: dict) -> None:
         result = tags(edhrec_data)
-        counts = [t.count for t in result]
+        counts = [t.deck_count for t in result]
         assert counts == sorted(counts, reverse=True)
         # Angels (3200) > Dragons (2400) > Demons (1800) > Reanimator (950)
         assert result[0].name == "Angels"

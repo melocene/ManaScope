@@ -100,6 +100,7 @@ def _compute_stats(
     cache: str,
     fmt: str | None,
     verbose: bool,
+    strict: bool = False,
 ) -> DeckStats:
     """Load card data, resolve the commander, and compute all deck statistics.
 
@@ -118,14 +119,17 @@ def _compute_stats(
         print(f"Opening cache: {cache}")
     conn = sc.open_cache(Path(cache))
 
-    txt_entries = deck.parse_decklist(decklist)
+    txt_entries = deck.parse_decklist(decklist, strict=strict)
     if not txt_entries:
+        conn.close()
         print("No valid decklist entries found. Exiting.", file=sys.stderr)
         sys.exit(1)
 
     identifiers = [ident for _, ident in txt_entries]
-    card_map = sc.load_decklist_cards(conn, identifiers, verbose=verbose)
-    conn.close()
+    try:
+        card_map = sc.load_decklist_cards(conn, identifiers, verbose=verbose)
+    finally:
+        conn.close()
     if verbose:
         print()
 
@@ -743,10 +747,11 @@ def run(
     agent: bool = False,
     json_flag: bool = False,
     return_data: bool = False,
+    strict: bool = False,
 ) -> dict | None:
     """Run the full mana-base and deck analysis, printing results to stdout."""
     verbose = not (agent or json_flag)
-    stats = _compute_stats(decklist, cache, fmt, verbose)
+    stats = _compute_stats(decklist, cache, fmt, verbose, strict=strict)
 
     if json_flag or return_data:
         out = _output_json(stats)

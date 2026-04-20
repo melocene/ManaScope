@@ -89,20 +89,30 @@ def analyze(
         bool, typer.Option("--agent", help="Output dense machine-readable format.")
     ] = False,
     json_flag: Annotated[bool, typer.Option("--json", help="Output pure JSON format.")] = False,
+    strict: Annotated[
+        bool,
+        typer.Option("--strict", help="Fail (exit code 1) on any malformed decklist line."),
+    ] = False,
     cache: CachePath = DB_PATH,
 ) -> None:
     """Full mana-base and deck analysis."""
     _print_notice(machine_readable=agent or json_flag)
     from manascope.analyze import run
+    from manascope.deck import DecklistParseError
 
-    run(
-        decklist=decklist,
-        cache=str(cache),
-        fmt=fmt,
-        compact=compact,
-        agent=agent,
-        json_flag=json_flag,
-    )
+    try:
+        run(
+            decklist=decklist,
+            cache=str(cache),
+            fmt=fmt,
+            compact=compact,
+            agent=agent,
+            json_flag=json_flag,
+            strict=strict,
+        )
+    except DecklistParseError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
 
 # Review
@@ -125,23 +135,33 @@ def review(
         bool, typer.Option("--agent", help="Output dense machine-readable format.")
     ] = False,
     json_flag: Annotated[bool, typer.Option("--json", help="Output pure JSON format.")] = False,
+    strict: Annotated[
+        bool,
+        typer.Option("--strict", help="Fail (exit code 1) on any malformed decklist line."),
+    ] = False,
     cache: CachePath = DB_PATH,
 ) -> None:
     """EDHREC cross-reference and owned-card gap analysis."""
     _print_notice(machine_readable=agent or json_flag)
+    from manascope.deck import DecklistParseError
     from manascope.review import run
 
-    run(
-        decklist=decklist,
-        collection=collection,
-        top=top,
-        fmt=fmt,
-        no_candidates=no_candidates,
-        compact=compact,
-        agent=agent,
-        json_flag=json_flag,
-        cache=str(cache),
-    )
+    try:
+        run(
+            decklist=decklist,
+            collection=collection,
+            top=top,
+            fmt=fmt,
+            no_candidates=no_candidates,
+            compact=compact,
+            agent=agent,
+            json_flag=json_flag,
+            cache=str(cache),
+            strict=strict,
+        )
+    except DecklistParseError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
 
 # Pipeline
@@ -158,6 +178,10 @@ def pipeline(
         typer.Option("--format", help="Override format (commander|brawl|standardbrawl)."),
     ] = None,
     top: Annotated[int, typer.Option(help="Number of EDHREC cards to evaluate.")] = 80,
+    strict: Annotated[
+        bool,
+        typer.Option("--strict", help="Fail (exit code 1) on any malformed decklist line."),
+    ] = False,
     cache: CachePath = DB_PATH,
 ) -> None:
     """Run a combined JSON pipeline analysis for AI agents."""
@@ -165,22 +189,33 @@ def pipeline(
     import json
 
     from manascope.analyze import run as run_analyze
+    from manascope.deck import DecklistParseError
     from manascope.review import run as run_review
 
-    analyze_data = run_analyze(
-        decklist=decklist, cache=str(cache), fmt=fmt, return_data=True, json_flag=True
-    )
+    try:
+        analyze_data = run_analyze(
+            decklist=decklist,
+            cache=str(cache),
+            fmt=fmt,
+            return_data=True,
+            json_flag=True,
+            strict=strict,
+        )
 
-    review_data = run_review(
-        decklist=decklist,
-        collection=collection,
-        top=top,
-        fmt=fmt,
-        no_candidates=True,
-        cache=str(cache),
-        return_data=True,
-        json_flag=True,
-    )
+        review_data = run_review(
+            decklist=decklist,
+            collection=collection,
+            top=top,
+            fmt=fmt,
+            no_candidates=True,
+            cache=str(cache),
+            return_data=True,
+            json_flag=True,
+            strict=strict,
+        )
+    except DecklistParseError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
     combined = {
         "analyze": analyze_data,
@@ -212,37 +247,38 @@ def prime(
 
     suppress = _suppress_stdout if quiet else contextlib.nullcontext
 
-    edhrec_conn = ec.open_cache(cache)
-    with suppress():
-        data = ec.fetch_commander(edhrec_conn, name)
-    if data is None:
-        typer.echo(f"ERROR: could not fetch EDHREC data for {name!r}", err=True)
-        edhrec_conn.close()
-        raise typer.Exit(1)
+    # Both modules share the same on-disk cache; open it once. Calling
+    # ec.open_cache once up-front guarantees the edhrec_commanders table
+    # exists before we write to it via ec.fetch_commander.
+    ec.open_cache(cache).close()
+    conn = sc.open_cache(cache)
+    try:
+        with suppress():
+            data = ec.fetch_commander(conn, name)
+        if data is None:
+            typer.echo(f"ERROR: could not fetch EDHREC data for {name!r}", err=True)
+            conn.close()
+            raise typer.Exit(1)
 
-    decks = ec.num_decks(data)
-    recommended = ec.all_recommended_cards(data)[:top]
-    all_names = [card.name for card in recommended]
+        decks = ec.num_decks(data)
+        recommended = ec.all_recommended_cards(data)[:top]
+        all_names = [card.name for card in recommended]
 
-    scryfall_conn = sc.open_cache(cache)
+        # Batch fetch: fetch_cards_by_names handles cache checks internally
+        # and only hits the network for missing cards, batched 75 at a time.
+        # Note: fetch_cards_by_names already sleeps between batches internally
+        # (BATCH_DELAY), respecting Scryfall's rate-limit guidelines.
+        fetched_cards = sc.fetch_cards_by_names(conn, all_names)
 
-    # Batch fetch: fetch_cards_by_names handles cache checks internally
-    # and only hits the network for missing cards, batched 75 at a time.
-    # Note: fetch_cards_by_names already sleeps between batches internally
-    # (BATCH_DELAY), respecting Scryfall's rate-limit guidelines.
-    fetched_cards = sc.fetch_cards_by_names(scryfall_conn, all_names)
+        found = len(fetched_cards)
+        errors = [n for n in all_names if n not in fetched_cards]
 
-    found = len(fetched_cards)
-    errors = [n for n in all_names if n not in fetched_cards]
-
-    typer.echo(f"EDHREC: {name} - {decks} decks, evaluating top {len(recommended)}")
-    typer.echo(f"Cache: {found} card(s) loaded, {len(errors)} not found.")
-    for card_name in errors:
-        typer.echo(f"  ! could not fetch: {card_name}")
-
-    scryfall_conn.close()
-    if edhrec_conn is not scryfall_conn:
-        edhrec_conn.close()
+        typer.echo(f"EDHREC: {name} - {decks} decks, evaluating top {len(recommended)}")
+        typer.echo(f"Cache: {found} card(s) loaded, {len(errors)} not found.")
+        for card_name in errors:
+            typer.echo(f"  ! could not fetch: {card_name}")
+    finally:
+        conn.close()
 
 
 # Verify
@@ -252,12 +288,17 @@ def prime(
 def verify(
     decklist: Annotated[str, typer.Option(help="Path to the decklist .txt file.")],
     collection: Annotated[list[str], typer.Option(help="Path(s) to collection CSV file(s).")],
+    strict: Annotated[
+        bool,
+        typer.Option("--strict", help="Fail (exit code 1) on any malformed decklist line."),
+    ] = False,
     cache: CachePath = DB_PATH,
 ) -> None:
     """Check which decklist cards are missing from the MTGA collection."""
     _print_notice()
     import sqlite3
 
+    from manascope import scryfall as sc
     from manascope.collection import (
         BASIC_LANDS,
         RARITY_ORDER,
@@ -265,18 +306,22 @@ def verify(
         load_collections_names,
         lookup_rarity,
     )
-    from manascope.deck import parse_decklist
+    from manascope.deck import DecklistParseError, parse_decklist
 
-    entries = parse_decklist(decklist)
+    try:
+        entries = parse_decklist(decklist, strict=strict)
+    except DecklistParseError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(1) from exc
     owned = (
         load_collections_names([Path(p) for p in collection])
         if len(collection) > 1
         else load_collection_names(Path(collection[0]))
     )
 
-    cache_conn: sqlite3.Connection | None = None
-    if Path(cache).exists():
-        cache_conn = sqlite3.connect(str(cache))
+    # Always go through sc.open_cache so the schema is idempotently ensured
+    # even if an empty or stray cache.db file happens to exist.
+    cache_conn: sqlite3.Connection | None = sc.open_cache(Path(cache))
 
     non_basic: list[str] = []
     missing_cards: list[str] = []
@@ -444,7 +489,7 @@ def edhrec(
                 for c in ec.high_synergy_cards(result)[:15]
             ],
             "combos": [c.description for c in ec.combos(result)] if ec.combos(result) else [],
-            "themes": [{"name": t.name, "count": t.count} for t in ec.tags(result)[:10]]
+            "themes": [{"name": t.name, "count": t.deck_count} for t in ec.tags(result)[:10]]
             if ec.tags(result)
             else [],
         }
@@ -504,7 +549,7 @@ def edhrec(
     if tg:
         typer.echo("\n  Top 10 Themes:")
         for tag in tg[:10]:
-            typer.echo(f"    {tag.name:<20} ({tag.count} decks)")
+            typer.echo(f"    {tag.name:<20} ({tag.deck_count} decks)")
 
     typer.echo("")
     db.close()

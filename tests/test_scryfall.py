@@ -1,12 +1,15 @@
 """Tests for manascope.scryfall — batch name fetching and cache behaviour."""
 
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from manascope.scryfall import (
+    _read_capped,
+    _ResponseTooLarge,
     _upsert_cards,
     fetch_cards_by_names,
     get_card_by_name,
@@ -17,7 +20,7 @@ from manascope.scryfall import (
 
 
 @pytest.fixture()
-def cache_conn(tmp_path: Path) -> sqlite3.Connection:
+def cache_conn(tmp_path: Path) -> Iterator[sqlite3.Connection]:
     """Open a fresh SQLite cache with the real schema."""
     db = tmp_path / "test_cache.db"
     conn = open_cache(db)
@@ -52,6 +55,25 @@ def _make_card(
 def _seed_cache(conn: sqlite3.Connection, cards: list[dict]) -> None:
     """Insert card dicts into the cache."""
     _upsert_cards(conn, cards)
+
+
+def _make_mock_response(body: dict, status_code: int = 200) -> MagicMock:
+    """Build a MagicMock response that mimics requests.Response for _read_capped.
+
+    Sets iter_content to yield the JSON-encoded body, plus a Content-Length
+    header, so the streaming size-cap path works transparently.
+    """
+    import json as _json
+
+    payload = _json.dumps(body).encode("utf-8")
+    mock_resp = MagicMock()
+    mock_resp.status_code = status_code
+    mock_resp.headers = {"Content-Length": str(len(payload))}
+    mock_resp.content = payload
+    mock_resp.iter_content.return_value = iter([payload])
+    mock_resp.json.return_value = body
+    mock_resp.raise_for_status = MagicMock()
+    return mock_resp
 
 
 # ── get_card_by_name ─────────────────────────────────────────────────────
@@ -149,13 +171,12 @@ class TestFetchCardsByNamesBatchFetch:
         mock_card_a = _make_card("Card A", "tst", "1")
         mock_card_b = _make_card("Card B", "tst", "2")
 
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "data": [mock_card_a, mock_card_b],
-            "not_found": [],
-        }
-        mock_resp.raise_for_status = MagicMock()
+        mock_resp = _make_mock_response(
+            {
+                "data": [mock_card_a, mock_card_b],
+                "not_found": [],
+            }
+        )
 
         mock_session = MagicMock()
         mock_session.post.return_value = mock_resp
@@ -193,10 +214,7 @@ class TestFetchCardsByNamesBatchFetch:
         _seed_cache(cache_conn, [cached])
 
         fetched = _make_card("New Card", "tst", "2")
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"data": [fetched], "not_found": []}
-        mock_resp.raise_for_status = MagicMock()
+        mock_resp = _make_mock_response({"data": [fetched], "not_found": []})
 
         mock_session = MagicMock()
         mock_session.post.return_value = mock_resp
@@ -215,13 +233,12 @@ class TestFetchCardsByNamesBatchFetch:
 
     def test_not_found_triggers_fuzzy_fallback(self, cache_conn: sqlite3.Connection) -> None:
         """Cards returned as not_found by the batch endpoint should fall back to fuzzy lookup."""
-        mock_batch_resp = MagicMock()
-        mock_batch_resp.status_code = 200
-        mock_batch_resp.json.return_value = {
-            "data": [],
-            "not_found": [{"name": "Sheoldred"}],
-        }
-        mock_batch_resp.raise_for_status = MagicMock()
+        mock_batch_resp = _make_mock_response(
+            {
+                "data": [],
+                "not_found": [{"name": "Sheoldred"}],
+            }
+        )
 
         mock_session = MagicMock()
         mock_session.post.return_value = mock_batch_resp
@@ -244,10 +261,7 @@ class TestFetchCardsByNamesBatchFetch:
         """When the batch returns a DFC with full name, the result key should be the requested front-face name."""
         dfc = _make_card("Virtue of Knowledge // Vantress Visions", "woe", "76")
 
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"data": [dfc], "not_found": []}
-        mock_resp.raise_for_status = MagicMock()
+        mock_resp = _make_mock_response({"data": [dfc], "not_found": []})
 
         mock_session = MagicMock()
         mock_session.post.return_value = mock_resp
@@ -265,10 +279,7 @@ class TestFetchCardsByNamesBatchFetch:
         _seed_cache(cache_conn, [old_card])
 
         new_card = _make_card("Sol Ring", "fdn", "999", mana_cost="{1}")
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"data": [new_card], "not_found": []}
-        mock_resp.raise_for_status = MagicMock()
+        mock_resp = _make_mock_response({"data": [new_card], "not_found": []})
 
         mock_session = MagicMock()
         mock_session.post.return_value = mock_resp
@@ -284,10 +295,7 @@ class TestFetchCardsByNamesBatchFetch:
         """Cards fetched from the network should be written to the cache."""
         card = _make_card("New Card", "tst", "42")
 
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {"data": [card], "not_found": []}
-        mock_resp.raise_for_status = MagicMock()
+        mock_resp = _make_mock_response({"data": [card], "not_found": []})
 
         mock_session = MagicMock()
         mock_session.post.return_value = mock_resp
@@ -345,3 +353,43 @@ class TestDfcNameNormalization:
         """Adventure cards like 'Bramble Familiar / Fetch Quest'."""
         owned = {"bramble familiar // fetch quest"}
         assert self._check_owned("Bramble Familiar / Fetch Quest", owned)
+
+
+# -- _read_capped streaming size cap ------------------------------------------
+
+
+class TestReadCapped:
+    """Cover the streaming response-size guard."""
+
+    def test_small_response_returned_intact(self) -> None:
+        payload = b'{"data": [1, 2, 3]}'
+        resp = MagicMock()
+        resp.headers = {"Content-Length": str(len(payload))}
+        resp.iter_content.return_value = iter([payload])
+        assert _read_capped(resp, limit=1024) == payload
+
+    def test_content_length_over_limit_short_circuits(self) -> None:
+        resp = MagicMock()
+        resp.headers = {"Content-Length": "9999"}
+        resp.iter_content.return_value = iter([b"" for _ in range(0)])
+        with pytest.raises(_ResponseTooLarge):
+            _read_capped(resp, limit=100)
+        resp.close.assert_called_once()
+        resp.iter_content.assert_not_called()
+
+    def test_streamed_body_over_limit_aborts_mid_read(self) -> None:
+        """No Content-Length header; body exceeds limit only after streaming."""
+        resp = MagicMock()
+        resp.headers = {}
+        # 3 chunks of 60 bytes each = 180 total; limit 100 triggers on chunk 2.
+        resp.iter_content.return_value = iter([b"x" * 60, b"x" * 60, b"x" * 60])
+        with pytest.raises(_ResponseTooLarge):
+            _read_capped(resp, limit=100)
+        resp.close.assert_called_once()
+
+    def test_malformed_content_length_falls_through_to_stream(self) -> None:
+        payload = b"hello"
+        resp = MagicMock()
+        resp.headers = {"Content-Length": "not-an-int"}
+        resp.iter_content.return_value = iter([payload])
+        assert _read_capped(resp, limit=1024) == payload

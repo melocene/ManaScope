@@ -16,6 +16,7 @@ import json
 import sqlite3
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import requests
@@ -31,6 +32,9 @@ BATCH_SIZE = 75  # Scryfall maximum per /cards/collection request
 BATCH_DELAY = (
     0.3  # 300 ms between requests (matches EDHREC delay; well within Scryfall's guidelines)
 )
+# Network timeout (seconds). Higher than EDHREC's 15s because a single
+# /cards/collection response can carry up to 75 full card objects.
+REQUEST_TIMEOUT = 30
 
 USER_AGENT = "manascope/0.1 (personal deckbuilding helper; non-commercial)"
 ACCEPT = "application/json"
@@ -62,6 +66,14 @@ def open_cache(db_path: Path = DB_PATH) -> sqlite3.Connection:
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
+    # Performance pragmas: WAL enables concurrent reads while a writer holds
+    # the DB (analyze + review share the file in pipeline), and the weaker
+    # NORMAL sync is safe for a local cache where a crash on write just
+    # means re-fetching from Scryfall. temp_store=MEMORY keeps sort/temp
+    # tables off disk.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA temp_store=MEMORY")
     conn.executescript(SCHEMA)
     conn.commit()
     return conn
@@ -71,25 +83,36 @@ def open_cache(db_path: Path = DB_PATH) -> sqlite3.Connection:
 
 
 def _upsert_cards(conn: sqlite3.Connection, cards: list[dict]) -> None:
-    """Upsert a list of raw Scryfall card objects into the cache."""
-    for card in cards:
-        set_code = card.get("set", "").lower()
-        collector_number = card.get("collector_number", "").lower()
-        name = card.get("name", "")
-        cost = mana_cost(card)
-        full_json = json.dumps(card)
-        conn.execute(
-            """
-            INSERT INTO cards (set_code, collector_number, name, mana_cost, full_json)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(set_code, collector_number) DO UPDATE SET
-                name       = excluded.name,
-                mana_cost  = excluded.mana_cost,
-                full_json  = excluded.full_json,
-                fetched_at = datetime('now')
-            """,
-            (set_code, collector_number, name, cost, full_json),
+    """Upsert a list of raw Scryfall card objects into the cache.
+
+    Uses ``executemany`` so Scryfall batches (up to 75 cards per response)
+    round-trip to SQLite as a single prepared statement rather than N
+    individual ``execute`` calls.
+    """
+    if not cards:
+        return
+    rows = [
+        (
+            card.get("set", "").lower(),
+            card.get("collector_number", "").lower(),
+            card.get("name", ""),
+            mana_cost(card),
+            json.dumps(card),
         )
+        for card in cards
+    ]
+    conn.executemany(
+        """
+        INSERT INTO cards (set_code, collector_number, name, mana_cost, full_json)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(set_code, collector_number) DO UPDATE SET
+            name       = excluded.name,
+            mana_cost  = excluded.mana_cost,
+            full_json  = excluded.full_json,
+            fetched_at = datetime('now')
+        """,
+        rows,
+    )
     conn.commit()
 
 
@@ -97,6 +120,40 @@ def _make_session() -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT, "Accept": ACCEPT})
     return session
+
+
+class _ResponseTooLarge(Exception):
+    """Raised when a streamed response exceeds MAX_RESPONSE_BYTES."""
+
+
+def _read_capped(resp: requests.Response, limit: int = MAX_RESPONSE_BYTES) -> bytes:
+    """Read a response body while enforcing a hard byte cap.
+
+    Streams the body in chunks; if the accumulated size would exceed
+    *limit*, the connection is closed and _ResponseTooLarge is raised
+    immediately rather than buffering the full payload. A Content-Length
+    hint above the cap short-circuits the read.
+    """
+    content_length = resp.headers.get("Content-Length")
+    if content_length is not None:
+        try:
+            if int(content_length) > limit:
+                resp.close()
+                raise _ResponseTooLarge(int(content_length))
+        except ValueError:
+            pass  # malformed header, fall through to streamed check
+
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in resp.iter_content(chunk_size=65536):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > limit:
+            resp.close()
+            raise _ResponseTooLarge(total)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _escape_like(value: str) -> str:
@@ -149,10 +206,23 @@ def get_card_by_name(
     return json.loads(row[0]) if row else None
 
 
+def iter_all_cards(conn: sqlite3.Connection) -> Iterator[dict]:
+    """Yield every card in the cache as a full Scryfall card dict.
+
+    Streams rows so memory usage stays bounded regardless of cache size.
+    Prefer this over :func:`get_all_cards` for new code.
+    """
+    for row in conn.execute("SELECT full_json FROM cards"):
+        yield json.loads(row[0])
+
+
 def get_all_cards(conn: sqlite3.Connection) -> list[dict]:
-    """Return every card in the cache as a list of full Scryfall card dicts."""
-    rows = conn.execute("SELECT full_json FROM cards").fetchall()
-    return [json.loads(r[0]) for r in rows]
+    """Return every card in the cache as a list of full Scryfall card dicts.
+
+    Materialises the whole cache in memory. For large caches, use
+    :func:`iter_all_cards` instead.
+    """
+    return list(iter_all_cards(conn))
 
 
 # Public fetch API  (cache-first; network only for misses)
@@ -208,18 +278,19 @@ def fetch_cards_by_id(
             resp = session.post(
                 COLLECTION_URL,
                 json={"identifiers": scryfall_ids},
-                timeout=30,
+                timeout=REQUEST_TIMEOUT,
+                stream=True,
             )
             resp.raise_for_status()
-            if len(resp.content) > MAX_RESPONSE_BYTES:
-                print(
-                    f"  [scryfall] ERROR: response too large ({len(resp.content)} bytes), skipping.",
-                    file=sys.stderr,
-                )
-                if batch_idx < len(chunks):
-                    time.sleep(BATCH_DELAY)
-                continue
-            body = resp.json()
+            body = json.loads(_read_capped(resp))
+        except _ResponseTooLarge as exc:
+            print(
+                f"  [scryfall] ERROR: response too large (>{int(exc.args[0])} bytes), skipping.",
+                file=sys.stderr,
+            )
+            if batch_idx < len(chunks):
+                time.sleep(BATCH_DELAY)
+            continue
         except requests.RequestException as exc:
             print(f"  [scryfall] ERROR batch {batch_idx}: {exc}", file=sys.stderr)
             if batch_idx < len(chunks):
@@ -243,6 +314,7 @@ def fetch_cards_by_id(
         if batch_idx < len(chunks):
             time.sleep(BATCH_DELAY)
 
+    session.close()
     return result
 
 
@@ -277,7 +349,8 @@ def fetch_card_by_name(
         resp = session.get(
             NAMED_URL,
             params={param_key: name},
-            timeout=30,
+            timeout=REQUEST_TIMEOUT,
+            stream=True,
         )
         if resp.status_code == 404:
             print(
@@ -285,23 +358,27 @@ def fetch_card_by_name(
                 file=sys.stderr,
             )
             time.sleep(BATCH_DELAY)
+            session.close()
             return None
         resp.raise_for_status()
-        if len(resp.content) > MAX_RESPONSE_BYTES:
-            print(
-                f"  [scryfall] ERROR: response too large ({len(resp.content)} bytes), skipping.",
-                file=sys.stderr,
-            )
-            time.sleep(BATCH_DELAY)
-            return None
-        card = resp.json()
+        card = json.loads(_read_capped(resp))
+    except _ResponseTooLarge as exc:
+        print(
+            f"  [scryfall] ERROR: response too large (>{int(exc.args[0])} bytes), skipping.",
+            file=sys.stderr,
+        )
+        time.sleep(BATCH_DELAY)
+        session.close()
+        return None
     except requests.RequestException as exc:
         print(f"  [scryfall] ERROR fetching {name!r}: {exc}", file=sys.stderr)
+        session.close()
         return None
 
     time.sleep(BATCH_DELAY)
 
     _upsert_cards(conn, [card])
+    session.close()
     return card
 
 
@@ -337,20 +414,13 @@ def fetch_cards_by_names(
         missing = list(names)
     else:
         for name in names:
+            # get_card_by_name already handles the DFC front-face fallback,
+            # so a cache miss here means the card is genuinely absent.
             cached = get_card_by_name(conn, name)
             if cached is not None:
                 result[name] = cached
             else:
-                # Also check for double-faced cards stored as "Front // Back"
-                row = conn.execute(
-                    "SELECT full_json FROM cards WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\\'",
-                    (_escape_like(name) + " // %",),
-                ).fetchone()
-                if row:
-                    card = json.loads(row[0])
-                    result[name] = card
-                else:
-                    missing.append(name)
+                missing.append(name)
 
     if not missing:
         return result
@@ -371,18 +441,19 @@ def fetch_cards_by_names(
             resp = session.post(
                 COLLECTION_URL,
                 json={"identifiers": scryfall_ids},
-                timeout=30,
+                timeout=REQUEST_TIMEOUT,
+                stream=True,
             )
             resp.raise_for_status()
-            if len(resp.content) > MAX_RESPONSE_BYTES:
-                print(
-                    f"  [scryfall] ERROR: response too large ({len(resp.content)} bytes), skipping.",
-                    file=sys.stderr,
-                )
-                if batch_idx < len(chunks):
-                    time.sleep(BATCH_DELAY)
-                continue
-            body = resp.json()
+            body = json.loads(_read_capped(resp))
+        except _ResponseTooLarge as exc:
+            print(
+                f"  [scryfall] ERROR: response too large (>{int(exc.args[0])} bytes), skipping.",
+                file=sys.stderr,
+            )
+            if batch_idx < len(chunks):
+                time.sleep(BATCH_DELAY)
+            continue
         except requests.RequestException as exc:
             print(f"  [scryfall] ERROR batch {batch_idx}: {exc}", file=sys.stderr)
             if batch_idx < len(chunks):
@@ -396,13 +467,14 @@ def fetch_cards_by_names(
         # Build a lowercase canonical→requested map for this chunk.
         req_by_lower = {n.lower(): n for n in chunk}
         for card in fetched:
-            canonical = card["name"]
+            canonical: str = str(card["name"])
             # Try exact lowercase match, then front-face prefix match
-            req_name = req_by_lower.get(canonical.lower())
-            if req_name is None:
-                # DFC: canonical is "Front // Back", requested was "Front"
-                front = canonical.split(" // ")[0]
-                req_name = req_by_lower.get(front.lower(), canonical)
+            # DFC fallback: canonical is "Front // Back", requested was "Front".
+            # Always resolves to a non-None str thanks to the canonical default.
+            req_name: str = req_by_lower.get(
+                canonical.lower(),
+                req_by_lower.get(canonical.split(" // ")[0].lower(), canonical),
+            )
             result[req_name] = card
 
         not_found_names = [nf.get("name") for nf in body.get("not_found", [])]
@@ -432,6 +504,7 @@ def fetch_cards_by_names(
                     file=sys.stderr,
                 )
 
+    session.close()
     return result
 
 

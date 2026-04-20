@@ -25,6 +25,9 @@ from manascope import DB_PATH, MAX_RESPONSE_BYTES
 JSON_API_URL = "https://json.edhrec.com/pages/commanders/{slug}.json"
 DEFAULT_TTL_DAYS = 14
 REQUEST_DELAY = 0.30  # 300 ms between requests (be a good citizen)
+# Network timeout (seconds). EDHREC responses are small JSON pages, so
+# a shorter timeout than Scryfall's /cards/collection payload is fine.
+REQUEST_TIMEOUT = 15
 
 USER_AGENT = "manascope/0.1 (personal deckbuilding helper; non-commercial)"
 ACCEPT = "application/json"
@@ -122,7 +125,7 @@ class TagInfo(NamedTuple):
 
     name: str
     slug: str
-    count: int
+    deck_count: int
 
 
 # Schema
@@ -148,6 +151,12 @@ def open_cache(db_path: Path = DB_PATH) -> sqlite3.Connection:
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
+    # Match the performance pragmas used by scryfall.open_cache so both
+    # modules configure the shared cache identically regardless of which
+    # one opens it first.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA temp_store=MEMORY")
     conn.executescript(SCHEMA)
     conn.commit()
     return conn
@@ -178,6 +187,34 @@ def _make_session() -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT, "Accept": ACCEPT})
     return session
+
+
+class _ResponseTooLarge(Exception):
+    """Raised when a streamed response exceeds MAX_RESPONSE_BYTES."""
+
+
+def _read_capped(resp: requests.Response, limit: int = MAX_RESPONSE_BYTES) -> bytes:
+    """Read a response body while enforcing a hard byte cap (streamed)."""
+    content_length = resp.headers.get("Content-Length")
+    if content_length is not None:
+        try:
+            if int(content_length) > limit:
+                resp.close()
+                raise _ResponseTooLarge(int(content_length))
+        except ValueError:
+            pass
+
+    chunks: list[bytes] = []
+    total = 0
+    for chunk in resp.iter_content(chunk_size=65536):
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > limit:
+            resp.close()
+            raise _ResponseTooLarge(total)
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _is_stale(fetched_at: str, ttl_days: int) -> bool:
@@ -266,29 +303,33 @@ def fetch_commander(
     print(f"  [edhrec] fetching {url}...", file=sys.stderr)
 
     try:
-        resp = session.get(url, timeout=15)
+        resp = session.get(url, timeout=REQUEST_TIMEOUT, stream=True)
         if resp.status_code == 404:
             print(
                 f"  [edhrec] WARNING: commander page not found - {slug!r}",
                 file=sys.stderr,
             )
+            time.sleep(REQUEST_DELAY)
+            session.close()
             return None
         resp.raise_for_status()
-        if len(resp.content) > MAX_RESPONSE_BYTES:
+        data = json.loads(_read_capped(resp))
+    except _ResponseTooLarge as exc:
+        print(
+            f"  [edhrec] ERROR: response too large (>{int(exc.args[0])} bytes), skipping.",
+            file=sys.stderr,
+        )
+        # Fall back to stale cache if available
+        cached = _get_cached(conn, slug)
+        if cached is not None:
             print(
-                f"  [edhrec] ERROR: response too large ({len(resp.content)} bytes), skipping.",
+                f"  [edhrec] using stale cache for {slug!r}",
                 file=sys.stderr,
             )
-            # Fall back to stale cache if available
-            cached = _get_cached(conn, slug)
-            if cached is not None:
-                print(
-                    f"  [edhrec] using stale cache for {slug!r}",
-                    file=sys.stderr,
-                )
-                return cached[0]
-            return None
-        data = resp.json()
+            session.close()
+            return cached[0]
+        session.close()
+        return None
     except requests.RequestException as exc:
         print(f"  [edhrec] ERROR fetching {slug!r}: {exc}", file=sys.stderr)
         # Fall back to stale cache if available
@@ -299,10 +340,12 @@ def fetch_commander(
                 file=sys.stderr,
             )
             return cached[0]
+        session.close()
         return None
 
     _upsert_commander(conn, slug, data)
     time.sleep(REQUEST_DELAY)
+    session.close()
     return data
 
 
@@ -468,11 +511,11 @@ def tags(data: dict[str, Any]) -> list[TagInfo]:
         TagInfo(
             name=entry.get("value", ""),
             slug=entry.get("slug", ""),
-            count=entry.get("count", 0),
+            deck_count=entry.get("count", 0),
         )
         for entry in raw
     ]
-    return sorted(result, key=lambda t: t.count, reverse=True)
+    return sorted(result, key=lambda t: t.deck_count, reverse=True)
 
 
 def similar_commanders(data: dict[str, Any]) -> list[dict[str, Any]]:
