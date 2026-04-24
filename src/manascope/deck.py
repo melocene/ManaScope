@@ -394,6 +394,23 @@ _LIST_OR_RE = re.compile(
     r"(\b[A-Z][a-z]+\b))",
 )
 
+# Cache compiled "context" regexes used by extract_synergy_types; each pattern
+# is keyed by the exact word and reused across every commander lookup.
+_CONTEXT_RE_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def _context_re(word: str) -> re.Pattern[str]:
+    cached = _CONTEXT_RE_CACHE.get(word)
+    if cached is None:
+        cached = re.compile(
+            r"(?:whenever|each|other|all|target|every|a|an)\s+"
+            r"(?:\w+\s+)*" + re.escape(word),
+            re.IGNORECASE,
+        )
+        _CONTEXT_RE_CACHE[word] = cached
+    return cached
+
+
 # Decklist & format functions
 
 
@@ -406,7 +423,15 @@ _ARENA_SECTIONS: set[str] = {
 }
 
 
-def parse_decklist(path: str | Path) -> list[tuple[int, CardIdentifier]]:
+class DecklistParseError(ValueError):
+    """Raised by parse_decklist(strict=True) when a line fails to parse."""
+
+
+def parse_decklist(
+    path: str | Path,
+    *,
+    strict: bool = False,
+) -> list[tuple[int, CardIdentifier]]:
     """Parse a decklist .txt file → list of (qty, CardIdentifier).
 
     Recognises optional Arena section headers (``Commander``, ``Deck``,
@@ -417,6 +442,10 @@ def parse_decklist(path: str | Path) -> list[tuple[int, CardIdentifier]]:
 
     Files without headers (paper / commander format) are parsed as before:
     line 1 = commander.
+
+    By default a malformed line emits a warning to stderr and is skipped.
+    Pass ``strict=True`` (wired up as ``--strict`` on the CLI) to raise
+    :class:`DecklistParseError` instead, so automation catches the failure.
     """
     commander_entries: list[tuple[int, CardIdentifier]] = []
     deck_entries: list[tuple[int, CardIdentifier]] = []
@@ -433,10 +462,10 @@ def parse_decklist(path: str | Path) -> list[tuple[int, CardIdentifier]]:
                 continue
             m = LINE_RE.match(line)
             if not m:
-                print(
-                    f"WARNING: line {lineno} does not match expected format, skipping: {line!r}",
-                    file=sys.stderr,
-                )
+                message = f"line {lineno} does not match expected format: {line!r}"
+                if strict:
+                    raise DecklistParseError(f"{path}: {message}")
+                print(f"WARNING: {message}, skipping", file=sys.stderr)
                 continue
             entry = (
                 int(m.group("qty")),
@@ -467,8 +496,32 @@ def detect_format(decklist_path: str | Path) -> str:
 # Card data helper functions
 
 
-def oracle_text(card: dict) -> str:
-    """Return the full oracle text of a card, joining faces with ' // '."""
+# Per-card memo key. Derived helpers (oracle_text, type_line, produced_mana,
+# land_speed, etc.) are invoked many times per card during pipeline runs
+# (analyze + review back-to-back). Caching the derived values on the card dict
+# under a single well-known key avoids re-running regex-heavy logic.
+_MEMO_KEY = "_ms_memo"
+
+
+def _memo(card: dict, key: str, compute):
+    """Return a cached value for ``key`` on ``card``, computing it on first use.
+
+    The cache is a plain dict stored on the card under ``_MEMO_KEY``. Because
+    Scryfall card dicts are reused across analyze/review within a single run,
+    this eliminates redundant oracle-text/regex work without any global state.
+    """
+    memo = card.get(_MEMO_KEY)
+    if memo is None:
+        memo = {}
+        card[_MEMO_KEY] = memo
+    if key in memo:
+        return memo[key]
+    value = compute()
+    memo[key] = value
+    return value
+
+
+def _compute_oracle_text(card: dict) -> str:
     top = card.get("oracle_text")
     if top is not None:
         return top
@@ -476,8 +529,12 @@ def oracle_text(card: dict) -> str:
     return " // ".join(f.get("oracle_text", "") for f in faces)
 
 
-def type_line(card: dict) -> str:
-    """Return the full type line of a card, joining faces with ' // '."""
+def oracle_text(card: dict) -> str:
+    """Return the full oracle text of a card, joining faces with ' // '."""
+    return _memo(card, "oracle_text", lambda: _compute_oracle_text(card))
+
+
+def _compute_type_line(card: dict) -> str:
     top = card.get("type_line", "")
     if top:
         return top
@@ -485,12 +542,21 @@ def type_line(card: dict) -> str:
     return " // ".join(f.get("type_line", "") for f in faces)
 
 
-def card_subtypes(card: dict) -> set[str]:
-    """Return the set of subtypes from the type line (everything after '-'), lowercased."""
+def type_line(card: dict) -> str:
+    """Return the full type line of a card, joining faces with ' // '."""
+    return _memo(card, "type_line", lambda: _compute_type_line(card))
+
+
+def _compute_card_subtypes(card: dict) -> set[str]:
     tl = type_line(card)
     if "—" in tl:
         return {s.strip().lower() for s in tl.split("—", 1)[1].split()}
     return set()
+
+
+def card_subtypes(card: dict) -> set[str]:
+    """Return the set of subtypes from the type line (everything after '-'), lowercased."""
+    return _memo(card, "card_subtypes", lambda: _compute_card_subtypes(card))
 
 
 def mana_cost(card: dict) -> str:
@@ -556,12 +622,7 @@ def card_type_category(card: dict) -> str:
     return "other"
 
 
-def produced_mana(card: dict) -> set[str]:
-    """Return the set of mana symbols this card can produce.
-
-    Derived from Scryfall's produced_mana field. Falls back to parsing
-    '{T}: Add {X}' oracle lines if the field is absent.
-    """
+def _compute_produced_mana(card: dict) -> set[str]:
     pm = card.get("produced_mana")
     if pm:
         return set(pm)
@@ -576,7 +637,16 @@ def produced_mana(card: dict) -> set[str]:
     return syms
 
 
-def land_speed(card: dict) -> str:
+def produced_mana(card: dict) -> set[str]:
+    """Return the set of mana symbols this card can produce.
+
+    Derived from Scryfall's produced_mana field. Falls back to parsing
+    '{T}: Add {X}' oracle lines if the field is absent.
+    """
+    return _memo(card, "produced_mana", lambda: _compute_produced_mana(card))
+
+
+def _compute_land_speed(card: dict) -> str:
     """Classify a land's entry speed from its oracle text.
 
     Categories:
@@ -632,8 +702,13 @@ def land_speed(card: dict) -> str:
     return "tapped"
 
 
+def land_speed(card: dict) -> str:
+    """Memoized wrapper around :func:`_compute_land_speed`."""
+    return _memo(card, "land_speed", lambda: _compute_land_speed(card))
+
+
 def _taps_for_mana(card: dict) -> bool:
-    return bool(ROCK_TAP_RE.search(oracle_text(card)))
+    return _memo(card, "taps_for_mana", lambda: bool(ROCK_TAP_RE.search(oracle_text(card))))
 
 
 def is_mana_rock(card: dict) -> bool:
@@ -674,7 +749,11 @@ def rock_land_equiv(card: dict) -> float:
     for line in text.splitlines():
         if ROCK_TAP_RE.search(line):
             syms = SYMBOL_RE.findall(line)
-            mana_out = sum(1 for s in syms if s in {"W", "U", "B", "R", "G", "C"} or s.isdigit())
+            mana_out = sum(
+                (int(s) if s.isdigit() else 1)
+                for s in syms
+                if s in {"W", "U", "B", "R", "G", "C"} or s.isdigit()
+            )
             break
 
     if cmc <= 1 and mana_out >= 2:
@@ -777,16 +856,12 @@ def extract_synergy_types(commander: dict) -> set[str]:
         # Look for "whenever ... <Type>" or "each <Type>" or "other <Types>"
         for word in re.findall(r"\b([A-Z][a-z]+)\b", text):
             wl = word.lower()
-            if wl in CREATURE_TYPES:
-                # Only include if it appears in a meaningful context
-                # (near "whenever", "each", "other", "all", "target", etc.)
-                context_re = re.compile(
-                    r"(?:whenever|each|other|all|target|every|a|an)\s+"
-                    r"(?:\w+\s+)*" + re.escape(word),
-                    re.IGNORECASE,
-                )
-                if context_re.search(text):
-                    oracle_types.add(wl)
+            # _context_re is module-level cached per word to avoid
+            # recompiling the same pattern on every iteration.
+            # Only include if the word names a creature type AND appears in
+            # a meaningful context (near "whenever", "each", "other", etc.).
+            if wl in CREATURE_TYPES and _context_re(word).search(text):
+                oracle_types.add(wl)
 
     # --- Phase 2: merge with commander's own subtypes ---
     subtype_creatures = {s for s in subtypes if s in CREATURE_TYPES}

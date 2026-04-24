@@ -27,7 +27,7 @@ classifiers = [
 ]
 dependencies = [
     "requests>=2.33.1",
-    "rich>=14.3.3",
+    "rich>=15.0.0",
     "typer>=0.24.1",
 ]
 
@@ -42,8 +42,8 @@ manascope = "manascope.cli:app"
 
 [dependency-groups]
 dev = [
-    "ruff>=0.15.9",
-    "ty>=0.0.29",
+    "ruff>=0.15.11",
+    "ty>=0.0.32",
     "pytest>=9.0.3",
     "pytest-mock>=3.15.1",
 ]
@@ -76,3 +76,9 @@ ignore = [
     "S101", # S101: assert is expected in tests
     "D",    # D: docstrings not required in tests
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: tests that spawn subprocesses or otherwise take noticeable time; skipped by default, run with -m slow",
+]
+addopts = "-m 'not slow'"

@@ -3,8 +3,8 @@
 ## Core Rules
 - **Source of Truth**: `decks/<format>/<deck>.txt`. Cache is NOT authoritative.
 - **Commands**: Always use `uv run manascope <cmd>`. NEVER `python`.
-- **Python 3 Exception Syntax**: Both `except (TypeError, ValueError):` and `except TypeError, ValueError:` are valid Python 3 — the bare-comma form creates an implicit tuple. Do NOT flag bare-comma except clauses as bugs or Python 2 remnants.
 - **Validation**: `uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv run ty check src/ && uv run python -m pytest tests/`
+- **Slow tests**: the ReDoS regression suite is marked `slow` and skipped by default. Run it on demand with `uv run python -m pytest tests/ -m slow`.
 - **Card Data**: ALL attributes MUST come from `uv run manascope lookup <name> --brief --json` in the current session. NEVER assume behavior from memory/name/art.
   - Always read `type_line`, `land_speed`, and `subtypes`. Never infer land entry conditions. Evaluate additive type modifications carefully.
 - **Batching**: All needed names are already in context from prior tool outputs — collect them and call once. NEVER make repeated single-item calls.
@@ -14,14 +14,18 @@
 - **Ignore**: Directories starting with `_` or `.`, prices, budget, rarity.
 - **Collections**: Confirm whether the collection is a paper (ManaBox) or Arena digital export before proceeding.
 - **Boundaries**: Do not modify decklists unprompted — swaps go in the review file. Changes can be applied on explicit user request; note this once if helpful but do not repeat. Do not print raw decklists or full EDHREC lists in chat.
-- **Flags**:
-  - `--json`: pure JSON output — `edhrec`, `analyze`, `review`, `lookup` *(`pipeline` outputs JSON natively — flag not needed)*
-  - `--agent`: dense machine-readable text optimized for LLM context — `analyze`, `review`
-  - `--compact`: reduced decorative output, still human-readable — `analyze`, `review`
-  - `--quiet` / `-q`: summary line only — `edhrec`, `prime`, `lookup`
-  - `--brief`: `lookup` only — never combine with `--quiet`
+- **Agent output (mandatory)**: Rich-formatted human output (panels, tables, banners, separators) can easily exceed 500 tokens per invocation. Always run commands in their densest machine-readable mode. NEVER invoke these in human mode from an agent session.
+  - `analyze` → `--agent`
+  - `review` → `--agent`
+  - `pipeline` → no flag (native JSON)
+  - `edhrec` → `--json`
+  - `lookup` → `--brief --json`
+  - `prime` → `--quiet`
+  - `verify` → no dense mode yet; accept the human output or skip unless needed
+- **Other flags**:
   - `--format (commander|brawl|standardbrawl)`: override auto-detected format — `analyze`, `review`, `pipeline`
   - `--top INTEGER`: EDHREC cards to evaluate, default 80 — `review`, `pipeline`, `prime`
+  - `--strict`: exit non-zero on malformed decklist lines — `analyze`, `review`, `pipeline`, `verify`
 
 ## Decklist Format Rules
 - **Line format** (all formats): `<qty> <name> (<set>) <collector#>` — e.g. `1 Isolated Chapel (OTC) 301`. Pick any owned printing unless directed otherwise.
@@ -35,13 +39,13 @@
 - **Format detection**: Auto-detected from the decklist directory path (`decks/commander/`, `decks/brawl/`, `decks/standardbrawl/`). Use `--format` to override if the decklist is outside this structure.
 
 ## Standard Workflow (Commander / Brawl)
-1. **Resolve Commander**: Paper format — line 1 is the commander. Arena format — line 1 is the `Commander` header, line 2 is the card. Use `lookup` if unsure.
+1. **Resolve Commander**: Paper format — line 1 is the commander. Arena format — line 1 is the `Commander` header, line 2 is the card. Use `lookup --brief --json` if unsure.
 2. **Prime Cache**: `uv run manascope prime "Cmdr Name" --quiet` *(fetches EDHREC data + pre-warms Scryfall card cache)*
 3. **Get Baseline**: `uv run manascope edhrec "Cmdr Name" --json` *(reads from cache)*
-4. **Run Pipeline**: `uv run manascope pipeline --decklist <path> --collection <csv>` *(If `stats.skipped > 0` in output: `prime --quiet`, then repeat.)*
-5. **Verify Ownership**: `uv run manascope verify --decklist <path> --collection <csv>`
-6. **Batch-Lookup**: ONE call covering all unfamiliar cards, gaps (including lands), and wishlist candidates before analysis.
-7. **Report**: Write `decks/<format>/<deck>-review.md`. Verify "In" cards are owned via ONE combined CSV search (all names in a single pattern). Confirm legality via `lookup --brief --json` — check that `legalities.<format>` equals `"legal"` for each recommended card.
+4. **Run Pipeline**: `uv run manascope pipeline --decklist <path> --collection <csv>` *(native JSON. If `stats.skipped > 0` in output: `prime --quiet`, then repeat.)*
+5. **Verify Ownership**: `uv run manascope verify --decklist <path> --collection <csv>` *(no dense mode — skip unless ownership mismatch is suspected after pipeline)*
+6. **Batch-Lookup**: ONE call covering all unfamiliar cards, gaps (including lands), and wishlist candidates — `uv run manascope lookup --brief --json "Card1" "Card2" ...`.
+7. **Report**: Write `decks/<format>/<deck>-review.md`. Verify "In" cards are owned via ONE combined CSV search (all names in a single pattern). Confirm legality via the step-6 `lookup --brief --json` output — check that `legalities.<format>` equals `"legal"` for each recommended card.
 8. **Validate**: Re-run pipeline if changes are applied.
 
 ## Review File (`<deck>-review.md`)

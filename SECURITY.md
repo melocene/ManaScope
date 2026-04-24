@@ -31,6 +31,8 @@ ManaScope is a local CLI tool. It makes outbound HTTP requests to [Scryfall](htt
 - HTTP request behaviour and response handling
 - Local SQLite cache handling
 
+TLS certificate verification relies on the CA bundle provided by `requests` / `certifi` in the active `uv` environment. This is intentional for a local `uv run` CLI; packaging the tool as a frozen binary would require revisiting that choice.
+
 The following are generally out of scope:
 
 - Bugs or vulnerabilities in Scryfall, EDHREC, or other third-party services

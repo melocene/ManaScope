@@ -162,35 +162,47 @@ def _cmc_str(cj: dict | None) -> str:
 # Cache helpers
 
 
-def _escape_like(value: str) -> str:
-    """Escape SQL LIKE wildcards so *value* is matched literally."""
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
 def _lookup_json(conn: sqlite3.Connection, name: str) -> dict | None:
     """Return the parsed full_json for a card by name, or None if not cached."""
-    c = conn.cursor()
-    c.execute("SELECT full_json FROM cards WHERE LOWER(name) = LOWER(?)", (name,))
-    row = c.fetchone()
+    row = conn.execute(
+        "SELECT full_json FROM cards WHERE LOWER(name) = LOWER(?)", (name,)
+    ).fetchone()
     if not row:
         # Double-faced cards stored as "Front // Back"
-        c.execute(
-            "SELECT full_json FROM cards WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\\'",
-            (_escape_like(name) + " //%",),
-        )
-        row = c.fetchone()
+        row = conn.execute(
+            r"SELECT full_json FROM cards WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\'",
+            (sc._escape_like(name) + " // %",),
+        ).fetchone()
     return json.loads(row[0]) if row else None
 
 
 # Theme matching
 
 
+# Module-level compile cache for theme regexes.
+# SLUG_PATTERNS and _FALLBACK_THEMES are filled with raw strings for
+# readability; we compile each unique pattern at most once and reuse it.
+_RE_CACHE: dict[str, re.Pattern[str]] = {}
+
+
+def _compiled(pattern: str | None) -> re.Pattern[str] | None:
+    if pattern is None:
+        return None
+    cached = _RE_CACHE.get(pattern)
+    if cached is None:
+        cached = re.compile(pattern, re.IGNORECASE)
+        _RE_CACHE[pattern] = cached
+    return cached
+
+
 def _matches_theme(cj: dict, type_pat: str | None, text_pat: str | None) -> bool:
     tl = deck.type_line(cj)
     tx = deck.oracle_text(cj)
-    if type_pat and re.search(type_pat, tl, re.IGNORECASE):
+    type_re = _compiled(type_pat)
+    if type_re is not None and type_re.search(tl):
         return True
-    return bool(text_pat and re.search(text_pat, tl + " " + tx, re.IGNORECASE))
+    text_re = _compiled(text_pat)
+    return bool(text_re is not None and text_re.search(tl + " " + tx))
 
 
 # EDHREC cross-reference
@@ -414,17 +426,17 @@ def run_collection_section(
     """Scan owned cards for upgrade candidates, grouped by EDHREC themes."""
     # Gather candidates: owned, legal, within colour identity, not in deck
     candidates: list[dict] = []
-    cur = conn.cursor()
-    cur.execute("SELECT name, full_json FROM cards")
+    # Stream rows and pre-filter on the cheap name check before paying
+    # for json.loads: only parse full_json for owned, not-in-deck cards.
+    cur = conn.execute("SELECT name, full_json FROM cards")
 
-    for row in cur.fetchall():
-        name: str = row[0]
-        cj = json.loads(row[1])
-
-        if name.lower() in deck_names:
+    for name, full_json in cur:
+        low = name.lower()
+        if low in deck_names:
             continue
-        if name.lower() not in owned:
+        if low not in owned:
             continue
+        cj = json.loads(full_json)
         if not deck.is_legal(cj, fmt):
             continue
         if not deck.is_within_identity(cj, colour_identity):
@@ -457,7 +469,7 @@ def run_collection_section(
     if edhrec_data is not None:
         themes: list[tuple[str, str | None, str | None]] = []
         for tag in ec.tags(edhrec_data):
-            if tag.count < min_tag_decks:
+            if tag.deck_count < min_tag_decks:
                 continue
             patterns = SLUG_PATTERNS.get(tag.slug)
             if patterns is None:
@@ -509,6 +521,7 @@ def run(
     json_flag: bool = False,
     cache: str = str(DB_PATH),
     return_data: bool = False,
+    strict: bool = False,
 ) -> dict | None:
     """Run the EDHREC deck review and (optionally) owned-upgrade-candidates scan."""
     fmt = fmt or deck.detect_format(decklist)
@@ -521,14 +534,17 @@ def run(
         print(f"Opening cache: {cache}")
     cache_conn = sc.open_cache(Path(cache))
 
-    txt_entries = deck.parse_decklist(decklist)
+    txt_entries = deck.parse_decklist(decklist, strict=strict)
     if not txt_entries:
+        cache_conn.close()
         print("ERROR: no valid decklist entries found.", file=sys.stderr)
         sys.exit(1)
 
     identifiers = [ident for _, ident in txt_entries]
-    card_map = sc.load_decklist_cards(cache_conn, identifiers, verbose=verbose)
-    cache_conn.close()
+    try:
+        card_map = sc.load_decklist_cards(cache_conn, identifiers, verbose=verbose)
+    finally:
+        cache_conn.close()
     if verbose:
         print()
 
@@ -598,43 +614,42 @@ def run(
         print(_sep("="))
 
     # ------------------------------------------------------------------
-    # Open a fresh direct sqlite3 connection for EDHREC + collection scan
-    # (sc.open_cache returns a scryfall_cache-managed connection; we need
-    # a plain sqlite3.Connection for both edhrec_cache and raw SQL scans)
+    # Re-open the shared cache for EDHREC + collection scan. Using
+    # sc.open_cache (rather than sqlite3.connect directly) guarantees the
+    # cards schema and performance pragmas are in place.
     # ------------------------------------------------------------------
-    conn = sqlite3.connect(cache)
+    conn = sc.open_cache(Path(cache))
+    try:
+        edhrec_data = ec.fetch_commander(conn, commander_name)
 
-    edhrec_data = ec.fetch_commander(conn, commander_name)
-
-    out_data = run_edhrec_section(
-        commander_name=commander_name,
-        deck_names=deck_names,
-        conn=conn,
-        owned=owned,
-        fmt=fmt,
-        top_n=top,
-        edhrec_data=edhrec_data,
-        compact=compact,
-        agent=agent,
-        json_flag=json_flag,
-        return_data=return_data,
-    )
-
-    if return_data:
-        conn.close()
-        return out_data
-
-    if collection and not no_candidates and verbose:
-        run_collection_section(
+        out_data = run_edhrec_section(
+            commander_name=commander_name,
+            deck_names=deck_names,
             conn=conn,
             owned=owned,
-            deck_names=deck_names,
-            colour_identity=colour_identity,
             fmt=fmt,
+            top_n=top,
             edhrec_data=edhrec_data,
+            compact=compact,
+            agent=agent,
+            json_flag=json_flag,
+            return_data=return_data,
         )
 
-    conn.close()
+        if return_data:
+            return out_data
+
+        if collection and not no_candidates and verbose:
+            run_collection_section(
+                conn=conn,
+                owned=owned,
+                deck_names=deck_names,
+                colour_identity=colour_identity,
+                fmt=fmt,
+                edhrec_data=edhrec_data,
+            )
+    finally:
+        conn.close()
     if verbose:
         print()
         print("Done.")
