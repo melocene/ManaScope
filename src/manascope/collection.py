@@ -122,3 +122,110 @@ def lookup_rarity(conn: sqlite3.Connection, card_name: str) -> str:
     if card is None:
         return "unknown"
     return card.get("rarity", "unknown")
+
+
+def filter_collection(
+    owned: dict[str, dict],
+    conn: sqlite3.Connection,
+    *,
+    color_identity: str | None = None,
+    within_identity: str | None = None,
+    type_substr: str | None = None,
+    rarity: str | None = None,
+    cmc: int | None = None,
+    cmc_max: int | None = None,
+    legal_in: str | None = None,
+) -> list[dict]:
+    """Filter a loaded collection against Scryfall cache attributes.
+
+    Cards not present in the Scryfall cache are silently skipped (callers
+    that care can prime the cache first via ``lookup`` or ``prime``).
+
+    Parameters
+    ----------
+    owned
+        ``{name_lower: entry_dict}`` mapping returned by ``load_collection``.
+    conn
+        Open Scryfall cache connection.
+    color_identity
+        Exact match. Use the empty string for colourless. Pass colours in
+        any order: ``"BW"`` and ``"WB"`` both match the same identity.
+    within_identity
+        Subset match. ``"BW"`` matches BW, B, W, and colourless cards.
+        Mutually useful with EDHREC commander color identity filtering.
+    type_substr
+        Case-insensitive substring match against the card's ``type_line``.
+    rarity
+        One of ``common``/``uncommon``/``rare``/``mythic``/``special``.
+    cmc
+        Exact CMC match.
+    cmc_max
+        Maximum CMC (inclusive).
+    legal_in
+        Format key (``commander``/``brawl``/``standardbrawl``). Cards must
+        be ``legal`` in that format. Uses :func:`manascope.deck.is_legal`
+        which knows the standardbrawl alias.
+
+    Returns
+    -------
+    A list of card dicts, each containing the canonical name, owned count,
+    rarity, CMC, type_line, and color identity. Sorted by name.
+    """
+    from manascope.deck import is_legal
+    from manascope.scryfall import get_card_by_name
+
+    target_ci: set[str] | None = None
+    if color_identity is not None:
+        target_ci = set(color_identity.upper())
+    within_ci: set[str] | None = None
+    if within_identity is not None:
+        within_ci = set(within_identity.upper())
+    type_needle = type_substr.lower() if type_substr else None
+    rarity_needle = rarity.lower() if rarity else None
+
+    results: list[dict] = []
+    seen_ids: set[int] = set()
+    for entry in owned.values():
+        # ``owned`` indexes DFCs under both "Front // Back" and "Front";
+        # both keys point at the same dict object, so id-dedup avoids
+        # double-counting without name-string parsing.
+        if id(entry) in seen_ids:
+            continue
+        seen_ids.add(id(entry))
+        name = entry.get("name", "")
+        try:
+            card = get_card_by_name(conn, name)
+        except json.JSONDecodeError, TypeError:
+            continue
+        if card is None:
+            continue
+
+        card_ci = set(card.get("color_identity", []))
+        if target_ci is not None and card_ci != target_ci:
+            continue
+        if within_ci is not None and not card_ci.issubset(within_ci):
+            continue
+        if type_needle and type_needle not in card.get("type_line", "").lower():
+            continue
+        if rarity_needle and card.get("rarity", "").lower() != rarity_needle:
+            continue
+        if cmc is not None and card.get("cmc", 0) != cmc:
+            continue
+        if cmc_max is not None and card.get("cmc", 0) > cmc_max:
+            continue
+        if legal_in and not is_legal(card, legal_in):
+            continue
+
+        results.append(
+            {
+                "name": card.get("name", name),
+                "count": entry.get("count", 1),
+                "rarity": card.get("rarity", "unknown"),
+                "cmc": card.get("cmc", 0),
+                "type_line": card.get("type_line", ""),
+                "color_identity": sorted(card_ci),
+                "set": card.get("set", ""),
+            }
+        )
+
+    return sorted(results, key=lambda r: r["name"])

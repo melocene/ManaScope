@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from manascope.collection import (
     BASIC_LANDS,
     RARITY_ORDER,
+    filter_collection,
     load_collection,
     load_collection_names,
     load_collections,
@@ -48,7 +50,7 @@ def empty_collection_file(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
-def cache_db(tmp_path: Path) -> sqlite3.Connection:
+def cache_db(tmp_path: Path) -> Iterator[sqlite3.Connection]:
     """Create an in-memory-style SQLite DB with a couple of card rows."""
     db_path = tmp_path / "cache.db"
     conn = sqlite3.connect(str(db_path))
@@ -471,3 +473,148 @@ class TestLoadCollectionsNames:
         empty2.write_text(MANABOX_HEADER + "\n", encoding="utf-8")
         names = load_collections_names([empty_csv_file, empty2])
         assert names == set()
+
+
+# ── filter_collection ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture()
+def filter_cache(tmp_path: Path) -> Iterator[sqlite3.Connection]:
+    """Cache populated with cards of varied colour identity, type, rarity, CMC."""
+    db_path = tmp_path / "filter_cache.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE cards (
+            set_code         TEXT NOT NULL,
+            collector_number TEXT NOT NULL,
+            name             TEXT NOT NULL,
+            mana_cost        TEXT NOT NULL DEFAULT '',
+            full_json        TEXT NOT NULL,
+            fetched_at       TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (set_code, collector_number)
+        );
+        CREATE INDEX idx_cards_name ON cards (name COLLATE NOCASE);
+        """
+    )
+
+    cards = [
+        # name, ci, type_line, rarity, cmc, brawl_legal
+        ("Smuggler's Copter", [], "Artifact \u2014 Vehicle", "rare", 2, True),
+        ("Bone Shards", ["B"], "Sorcery", "common", 1, True),
+        ("Anguished Unmaking", ["W", "B"], "Instant", "mythic", 3, True),
+        ("Lightning Bolt", ["R"], "Instant", "common", 1, False),
+        ("Hotshot Mechanic", ["W"], "Artifact Creature \u2014 Fox Pilot", "uncommon", 1, True),
+    ]
+    for i, (name, ci, type_line, rarity, cmc, legal) in enumerate(cards):
+        payload = {
+            "name": name,
+            "type_line": type_line,
+            "color_identity": ci,
+            "rarity": rarity,
+            "cmc": cmc,
+            "set": "tst",
+            "collector_number": str(i + 1),
+            "legalities": {
+                "brawl": "legal" if legal else "not_legal",
+                "commander": "legal",
+            },
+        }
+        conn.execute(
+            "INSERT INTO cards (set_code, collector_number, name, full_json) VALUES (?,?,?,?)",
+            ("tst", str(i + 1), name, json.dumps(payload)),
+        )
+    conn.commit()
+    yield conn
+    conn.close()
+
+
+def _owned(*names: str) -> dict[str, dict]:
+    return {n.lower(): {"name": n, "count": 1} for n in names}
+
+
+class TestFilterCollection:
+    def test_color_identity_exact_match(self, filter_cache: sqlite3.Connection) -> None:
+        owned = _owned("Smuggler's Copter", "Bone Shards", "Anguished Unmaking")
+        # Empty string → colourless only.
+        results = filter_collection(owned, filter_cache, color_identity="")
+        assert [r["name"] for r in results] == ["Smuggler's Copter"]
+
+    def test_color_identity_multi_color(self, filter_cache: sqlite3.Connection) -> None:
+        owned = _owned("Anguished Unmaking", "Bone Shards")
+        # "BW" matches the same identity regardless of arg order.
+        for spelling in ("WB", "BW", "bw"):
+            results = filter_collection(owned, filter_cache, color_identity=spelling)
+            assert [r["name"] for r in results] == ["Anguished Unmaking"]
+
+    def test_within_identity_includes_subsets(self, filter_cache: sqlite3.Connection) -> None:
+        owned = _owned("Anguished Unmaking", "Bone Shards", "Lightning Bolt", "Smuggler's Copter")
+        results = filter_collection(owned, filter_cache, within_identity="BW")
+        names = {r["name"] for r in results}
+        # BW (Anguished Unmaking), B (Bone Shards), and colourless (Copter) all qualify.
+        assert names == {"Anguished Unmaking", "Bone Shards", "Smuggler's Copter"}
+
+    def test_type_substring_is_case_insensitive(self, filter_cache: sqlite3.Connection) -> None:
+        owned = _owned("Smuggler's Copter", "Bone Shards", "Hotshot Mechanic")
+        results = filter_collection(owned, filter_cache, type_substr="VEHICLE")
+        assert [r["name"] for r in results] == ["Smuggler's Copter"]
+
+    def test_rarity_filter(self, filter_cache: sqlite3.Connection) -> None:
+        owned = _owned("Smuggler's Copter", "Bone Shards", "Hotshot Mechanic")
+        results = filter_collection(owned, filter_cache, rarity="uncommon")
+        assert [r["name"] for r in results] == ["Hotshot Mechanic"]
+
+    def test_cmc_max(self, filter_cache: sqlite3.Connection) -> None:
+        owned = _owned("Bone Shards", "Anguished Unmaking", "Smuggler's Copter")
+        results = filter_collection(owned, filter_cache, cmc_max=2)
+        names = {r["name"] for r in results}
+        assert names == {"Bone Shards", "Smuggler's Copter"}
+
+    def test_legal_in_filter_excludes_illegal(self, filter_cache: sqlite3.Connection) -> None:
+        owned = _owned("Lightning Bolt", "Bone Shards")
+        results = filter_collection(owned, filter_cache, legal_in="brawl")
+        # Lightning Bolt is brawl=not_legal in our fixture; should be excluded.
+        assert [r["name"] for r in results] == ["Bone Shards"]
+
+    def test_uncached_cards_skipped(self, filter_cache: sqlite3.Connection) -> None:
+        # Owned but not in cache: silently dropped (not raised).
+        owned = _owned("Some Phantom Card", "Bone Shards")
+        results = filter_collection(owned, filter_cache)
+        assert [r["name"] for r in results] == ["Bone Shards"]
+
+    def test_results_sorted_by_name(self, filter_cache: sqlite3.Connection) -> None:
+        owned = _owned("Smuggler's Copter", "Bone Shards", "Anguished Unmaking", "Hotshot Mechanic")
+        results = filter_collection(owned, filter_cache)
+        names = [r["name"] for r in results]
+        assert names == sorted(names)
+
+    def test_dfc_front_face_alias_not_double_counted(
+        self, tmp_path: Path, filter_cache: sqlite3.Connection
+    ) -> None:
+        # ``load_collection`` indexes DFCs under both "Front // Back" and "Front";
+        # both keys point at the same dict object, so the filter must dedup.
+        shared = {"name": "Bone Shards", "count": 1}
+        owned = {"bone shards": shared, "bone shards // backside": shared}
+        results = filter_collection(owned, filter_cache)
+        assert len(results) == 1
+        assert results[0]["name"] == "Bone Shards"
+
+    def test_combined_filters(self, filter_cache: sqlite3.Connection) -> None:
+        owned = _owned(
+            "Smuggler's Copter",
+            "Bone Shards",
+            "Anguished Unmaking",
+            "Hotshot Mechanic",
+            "Lightning Bolt",
+        )
+        # "Cheap white pilots/equipment legal in brawl"
+        results = filter_collection(
+            owned,
+            filter_cache,
+            within_identity="W",
+            cmc_max=1,
+            legal_in="brawl",
+        )
+        # Hotshot Mechanic (W, cmc 1, brawl legal) and Smuggler's Copter
+        # (colourless, cmc 2 → excluded by cmc_max).
+        assert [r["name"] for r in results] == ["Hotshot Mechanic"]
