@@ -72,7 +72,7 @@ Slow ReDoS tests on demand:
 5. Run `uv run manascope pipeline --decklist <path> --collection <csv>`.
 
 ## Review Files
-- Use `docs/review-template.md`.
+- Place reviews in the same directory as the deck file, named `<commander>-review.md` (e.g. `decks/brawl/greasefang-review.md`).
 - Keep reviews terse and human-readable.
 - Include swaps, owned omissions, wishlist, mana-base notes, combo lines, wildcard needs, final verdict, and deck path.
 - Do not include full decklists or full EDHREC lists.
