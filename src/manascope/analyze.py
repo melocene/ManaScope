@@ -316,7 +316,16 @@ def _compute_stats(
 
 def _output_json(stats: DeckStats) -> dict:
     """Build the JSON-serialisable analysis dict."""
+    expected = deck.FORMAT_DECK_SIZE.get(stats.deck_format)
     out_data = {
+        "format": stats.deck_format,
+        "cards": {
+            "total": stats.card_count,
+            "expected": expected,
+            "ok": (expected is None) or (stats.card_count == expected),
+            "lands": stats.total_lands,
+            "spells": stats.total_spells,
+        },
         "type_distribution": dict(stats.type_distribution),
         "mana": {
             "raw": stats.total_lands,

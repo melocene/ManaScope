@@ -182,6 +182,13 @@ def pipeline(
         bool,
         typer.Option("--strict", help="Fail (exit code 1) on any malformed decklist line."),
     ] = False,
+    summary: Annotated[
+        bool,
+        typer.Option(
+            "--summary",
+            help="Emit a single status line instead of full JSON (fast triage).",
+        ),
+    ] = False,
     cache: CachePath = DB_PATH,
 ) -> None:
     """Run a combined JSON pipeline analysis for AI agents."""
@@ -217,12 +224,99 @@ def pipeline(
         typer.echo(f"ERROR: {exc}", err=True)
         raise typer.Exit(1) from exc
 
-    combined = {
+    verify_data: dict | None = None
+    if collection:
+        # Re-run verification using the shared helper so the pipeline output
+        # carries the same ownership data the standalone verify command would
+        # — saves agents an extra command call after pipeline.
+        from manascope import scryfall as sc
+        from manascope.collection import (
+            load_collection_names,
+            load_collections_names,
+        )
+        from manascope.deck import parse_decklist
+        from manascope.verify import verify_decklist
+
+        try:
+            entries = parse_decklist(decklist, strict=strict)
+        except DecklistParseError as exc:
+            typer.echo(f"ERROR: {exc}", err=True)
+            raise typer.Exit(1) from exc
+
+        paths = [Path(p) for p in collection]
+        owned = load_collections_names(paths) if len(paths) > 1 else load_collection_names(paths[0])
+        v_conn = sc.open_cache(Path(cache))
+        try:
+            verify_data = verify_decklist(entries, owned, v_conn)
+        finally:
+            v_conn.close()
+
+    combined: dict = {
         "analyze": analyze_data,
         "review": review_data,
     }
+    if verify_data is not None:
+        combined["verify"] = verify_data
+
+    if summary:
+        print(_pipeline_summary_line(combined))
+        return
 
     print(json.dumps(combined))
+
+
+def _pipeline_summary_line(combined: dict) -> str:
+    """Render the pipeline result as a single status line for fast triage.
+
+    Format::
+
+        <STATUS> <total>/<expected> lands=<n> <C>=<src>(<bal>) ... \
+            gaps_owned=<n> gaps_unowned=<n> [missing=<n>]
+
+    ``STATUS`` is ``OK`` when card count matches the format target and (when a
+    collection is provided) no cards are missing; otherwise ``FAIL``. Balance
+    statuses come straight from ``analyze.balance[colour].status``.
+    """
+    az = combined.get("analyze") or {}
+    rv = combined.get("review") or {}
+    vf = combined.get("verify")
+
+    cards = az.get("cards") or {}
+    total = cards.get("total")
+    expected = cards.get("expected")
+    cards_ok = cards.get("ok", True)
+    lands = cards.get("lands")
+
+    parts: list[str] = []
+    if total is not None and expected is not None:
+        parts.append(f"{total}/{expected}")
+    elif total is not None:
+        parts.append(str(total))
+    if lands is not None:
+        parts.append(f"lands={lands}")
+
+    balance = az.get("balance") or {}
+    for colour, info in balance.items():
+        src = info.get("source_count", "?")
+        bal = info.get("status", "?")
+        parts.append(f"{colour}={src}({bal})")
+
+    stats = rv.get("stats") or {}
+    if "gaps_owned" in stats:
+        parts.append(f"gaps_owned={stats['gaps_owned']}")
+    if "gaps_not_owned" in stats:
+        parts.append(f"gaps_unowned={stats['gaps_not_owned']}")
+
+    missing = None
+    if isinstance(vf, dict):
+        missing = vf.get("missing_count")
+        parts.append(f"missing={missing}")
+
+    balance_ok = (
+        all((info or {}).get("status") == "OK" for info in balance.values()) if balance else True
+    )
+    status = "OK" if cards_ok and balance_ok and (missing in (None, 0)) else "FAIL"
+    return status + " " + " ".join(parts)
 
 
 # Prime
@@ -235,10 +329,26 @@ def prime(
     quiet: Annotated[
         bool, typer.Option("--quiet", "-q", help="Suppress per-card messages.")
     ] = False,
+    json_flag: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help=(
+                "Emit a structured JSON report of primed cards (commander, deck "
+                "sample, primed list, missing list). Implies --quiet."
+            ),
+        ),
+    ] = False,
     cache: CachePath = DB_PATH,
 ) -> None:
     """Prime the Scryfall cache with EDHREC-recommended cards."""
+    # JSON output must be the only thing on stdout for agents to parse it; force
+    # quiet so suppression covers the EDHREC fetch chatter as well.
+    if json_flag:
+        quiet = True
     _print_notice(machine_readable=quiet)
+    import json as json_mod
+
     from manascope import edhrec as ec
     from manascope import scryfall as sc
 
@@ -256,7 +366,23 @@ def prime(
         with suppress():
             data = ec.fetch_commander(conn, name)
         if data is None:
-            typer.echo(f"ERROR: could not fetch EDHREC data for {name!r}", err=True)
+            if json_flag:
+                print(
+                    json_mod.dumps(
+                        {
+                            "commander": name,
+                            "error": "could not fetch EDHREC data",
+                            "decks": 0,
+                            "evaluated": 0,
+                            "cached": 0,
+                            "missing_count": 0,
+                            "primed": [],
+                            "missing": [],
+                        }
+                    )
+                )
+            else:
+                typer.echo(f"ERROR: could not fetch EDHREC data for {name!r}", err=True)
             conn.close()
             raise typer.Exit(1)
 
@@ -272,6 +398,38 @@ def prime(
 
         found = len(fetched_cards)
         errors = [n for n in all_names if n not in fetched_cards]
+
+        if json_flag:
+            # Resolve canonical Scryfall names so primed[] matches what
+            # downstream commands (lookup/edhrec) will use as keys.
+            primed: list[dict] = []
+            for requested in all_names:
+                cj = fetched_cards.get(requested)
+                if cj is None:
+                    continue
+                primed.append(
+                    {
+                        "name": cj.get("name", requested),
+                        "requested": requested,
+                        "set": (cj.get("set") or "").upper() or None,
+                        "collector_number": cj.get("collector_number"),
+                        "rarity": cj.get("rarity"),
+                    }
+                )
+            print(
+                json_mod.dumps(
+                    {
+                        "commander": ec.commander_display_name(data, fallback=name),
+                        "decks": decks,
+                        "evaluated": len(recommended),
+                        "cached": found,
+                        "missing_count": len(errors),
+                        "primed": primed,
+                        "missing": errors,
+                    }
+                )
+            )
+            return
 
         typer.echo(f"EDHREC: {name} - {decks} decks, evaluating top {len(recommended)}")
         typer.echo(f"Cache: {found} card(s) loaded, {len(errors)} not found.")
@@ -292,101 +450,215 @@ def verify(
         bool,
         typer.Option("--strict", help="Fail (exit code 1) on any malformed decklist line."),
     ] = False,
+    json_flag: Annotated[
+        bool, typer.Option("--json", help="Machine-readable JSON output.")
+    ] = False,
+    fix: Annotated[
+        bool,
+        typer.Option(
+            "--fix",
+            help=(
+                "Rewrite the decklist with corrected (SET) CN for any line whose "
+                "printing isn't in the cache, using a known printing of the same "
+                "card. Only safe printings (cached) are substituted; missing "
+                "cards are left untouched and still reported."
+            ),
+        ),
+    ] = False,
+    printings: Annotated[
+        bool,
+        typer.Option(
+            "--printings",
+            help=(
+                "Also verify each line's exact (SET) CN matches a non-foil printing "
+                "in the collection CSV. Adds 'wrong_printing' to the JSON output for "
+                "any decklist line whose card name is owned but at a different "
+                "printing. Requires a ManaBox-style CSV with Set code, Collector "
+                "number, and Foil columns; silently inactive for MTGA exports."
+            ),
+        ),
+    ] = False,
     cache: CachePath = DB_PATH,
 ) -> None:
     """Check which decklist cards are missing from the MTGA collection."""
-    _print_notice()
+    _print_notice(machine_readable=json_flag)
+    import json as json_mod
     import sqlite3
 
     from manascope import scryfall as sc
     from manascope.collection import (
-        BASIC_LANDS,
         RARITY_ORDER,
         load_collection_names,
+        load_collection_printings,
         load_collections_names,
-        lookup_rarity,
+        load_collections_printings,
     )
     from manascope.deck import DecklistParseError, parse_decklist
+    from manascope.verify import verify_decklist
 
     try:
         entries = parse_decklist(decklist, strict=strict)
     except DecklistParseError as exc:
         typer.echo(f"ERROR: {exc}", err=True)
         raise typer.Exit(1) from exc
+
     owned = (
         load_collections_names([Path(p) for p in collection])
         if len(collection) > 1
         else load_collection_names(Path(collection[0]))
     )
+    owned_printings = None
+    if printings:
+        owned_printings = (
+            load_collections_printings([Path(p) for p in collection])
+            if len(collection) > 1
+            else load_collection_printings(Path(collection[0]))
+        )
 
     # Always go through sc.open_cache so the schema is idempotently ensured
     # even if an empty or stray cache.db file happens to exist.
     cache_conn: sqlite3.Connection | None = sc.open_cache(Path(cache))
 
-    non_basic: list[str] = []
-    missing_cards: list[str] = []
+    fix_report: dict | None = None
+    if fix:
+        fix_report = _fix_decklist_printings(Path(decklist), entries, cache_conn)
+        # Re-parse so missing-card reporting reflects the rewritten file.
+        entries = parse_decklist(decklist, strict=strict)
 
-    for _, ident in entries:
-        name = ident.name
-        if name.lower() in BASIC_LANDS:
-            continue
-        non_basic.append(name)
-        low = name.lower()
-        # Normalize single-slash DFC separator to double-slash for matching
-        normalized = low.replace(" / ", " // ")
-        if normalized in owned:
-            continue
-        # Check front-face only (handles both "Front / Back" and "Front // Back")
-        front = normalized.split(" // ", 1)[0] if " // " in normalized else low
-        if front in owned:
-            continue
-        missing_cards.append(name)
+    result = verify_decklist(entries, owned, cache_conn, owned_printings=owned_printings)
+
+    if json_flag:
+        payload: dict = {
+            "checked": result["checked"],
+            "owned_count": result["owned_count"],
+            "missing_count": result["missing_count"],
+            "missing": result["missing"],
+            "by_rarity": {r: names for r, names in result["by_rarity"].items()},
+        }
+        if "wrong_printing" in result:
+            payload["wrong_printing_count"] = result["wrong_printing_count"]
+            payload["wrong_printing"] = result["wrong_printing"]
+        if fix_report is not None:
+            payload["fix"] = fix_report
+        print(json_mod.dumps(payload))
+        if cache_conn:
+            cache_conn.close()
+        if result["missing_count"] or result.get("wrong_printing_count", 0):
+            raise typer.Exit(1)
+        return
 
     typer.echo(
-        f"Checked {len(non_basic)} non-basic cards against collection ({len(owned)} unique owned)."
+        f"Checked {result['checked']} non-basic cards against collection "
+        f"({result['owned_count']} unique owned)."
     )
+    if fix_report is not None:
+        typer.echo(
+            f"Fix: rewrote {fix_report['rewritten']} line(s); "
+            f"{fix_report['unresolved']} unresolved."
+        )
 
-    if not missing_cards:
+    if result["missing_count"] == 0 and not result.get("wrong_printing_count"):
         typer.echo("* All cards owned - deck is importable without crafting.")
         if cache_conn:
             cache_conn.close()
         return
 
-    card_rarity: dict[str, str] = {}
-    for card_name in missing_cards:
-        card_rarity[card_name] = lookup_rarity(cache_conn, card_name) if cache_conn else "unknown"
-
-    by_rarity: dict[str, list[str]] = {}
-    for card_name, rarity in card_rarity.items():
-        by_rarity.setdefault(rarity, []).append(card_name)
+    if result.get("wrong_printing_count"):
+        typer.echo("")
+        typer.echo(f"  [WRONG PRINTING] ({result['wrong_printing_count']})")
+        for wp in result["wrong_printing"]:
+            typer.echo(f"    * {wp['name']} ({wp['set']}) {wp['collector_number']}")
 
     typer.echo("")
-    for rarity in RARITY_ORDER:
-        cards = by_rarity.pop(rarity, [])
+    for rarity, cards in result["by_rarity"].items():
         if not cards:
             continue
         typer.echo(f"  [{rarity.upper()}]")
-        for c in sorted(cards):
-            typer.echo(f"    * {c}")
-    for rarity, cards in sorted(by_rarity.items()):
-        if not cards:
-            continue
-        typer.echo(f"  [{rarity.upper()}]")
-        for c in sorted(cards):
+        for c in cards:
             typer.echo(f"    * {c}")
 
-    counts: dict[str, int] = {}
-    for r in card_rarity.values():
-        counts[r] = counts.get(r, 0) + 1
+    counts: dict[str, int] = {r: len(names) for r, names in result["by_rarity"].items()}
     parts = [f"{counts[r]} {r}" for r in RARITY_ORDER if r in counts]
     for r in sorted(counts):
         if r not in RARITY_ORDER:
             parts.append(f"{counts[r]} {r}")
-    typer.echo(f"\n{len(missing_cards)} card(s) missing: {', '.join(parts)}")
+    typer.echo(f"\n{result['missing_count']} card(s) missing: {', '.join(parts)}")
 
     if cache_conn:
         cache_conn.close()
     raise typer.Exit(1)
+
+
+def _fix_decklist_printings(
+    path: Path,
+    entries: object,
+    cache_conn,
+) -> dict:
+    """Rewrite a decklist file in-place, replacing bad ``(SET) CN`` with cached printings.
+
+    A line is considered "bad" when its (set, collector_number) tuple isn't
+    in the Scryfall cache but the card's *name* is. The replacement uses
+    whatever printing :func:`scryfall.get_card_by_name` returns, which is
+    the most recently fetched one — stable enough for re-import since
+    Arena matches on name + set anyway.
+
+    Returns a report dict with ``rewritten``, ``unresolved``, and
+    ``replacements`` (a list of ``{old, new}`` strings).
+    """
+    from manascope import scryfall as sc
+
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    replacements: list[dict[str, str]] = []
+    unresolved: list[str] = []
+
+    new_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.lower() in {"commander", "deck", "sideboard", "companion"}:
+            new_lines.append(line)
+            continue
+        from manascope.deck import LINE_RE
+
+        m = LINE_RE.match(stripped)
+        if not m:
+            new_lines.append(line)
+            continue
+        qty = m.group("qty")
+        name = m.group("name")
+        set_code = m.group("set")
+        cn = m.group("number")
+
+        # Already cached at this printing? Leave it.
+        if sc.get_card_by_id(cache_conn, set_code, cn) is not None:
+            new_lines.append(line)
+            continue
+
+        # Try to find any cached printing of this card by name.
+        card = sc.get_card_by_name(cache_conn, name)
+        if card is None:
+            unresolved.append(name)
+            new_lines.append(line)
+            continue
+
+        new_set = card.get("set", set_code).upper()
+        new_cn = card.get("collector_number", cn)
+        new_line = f"{qty} {name} ({new_set}) {new_cn}"
+        replacements.append({"old": stripped, "new": new_line})
+        new_lines.append(new_line)
+
+    if replacements:
+        path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+    # Suppress unused-arg warning when entries isn't needed (we re-parse).
+    _ = entries
+
+    return {
+        "rewritten": len(replacements),
+        "unresolved": len(unresolved),
+        "replacements": replacements,
+        "unresolved_names": sorted(set(unresolved)),
+    }
 
 
 # Lookup
@@ -397,6 +669,17 @@ def lookup(
     names: Annotated[list[str], typer.Argument(help="Card name(s) to look up.")],
     exact: Annotated[bool, typer.Option("--exact", help="Require exact name match.")] = False,
     brief: Annotated[bool, typer.Option("--brief", help="Omit rarity and price.")] = False,
+    minimal: Annotated[
+        bool,
+        typer.Option(
+            "--minimal",
+            help=(
+                "JSON only: drop oracle_text, colors, rarity, P/T/loyalty, "
+                "notable_types, land_equiv, and produced_mana for ~60-80% "
+                "smaller payloads. Implies --json."
+            ),
+        ),
+    ] = False,
     quiet: Annotated[
         bool, typer.Option("--quiet", "-q", help="Cache-prime only; summary line.")
     ] = False,
@@ -409,6 +692,10 @@ def lookup(
     cache: CachePath = DB_PATH,
 ) -> None:
     """Look up cards by name (cache-first, fetches on miss)."""
+    # --minimal is a JSON-only knob; auto-imply --json so agents don't have to
+    # remember to pass both flags together.
+    if minimal:
+        json_flag = True
     _print_notice(machine_readable=json_flag or quiet)
     import json as json_mod
 
@@ -428,7 +715,7 @@ def lookup(
             continue
         cached_count += 1
         if json_flag:
-            json_results.append(_card_to_json(card))
+            json_results.append(_card_to_json(card, conn=conn, minimal=minimal))
         elif not quiet:
             _display_card(card, brief=brief)
 
@@ -442,6 +729,154 @@ def lookup(
         raise typer.Exit(1)
 
 
+# Collection
+
+
+@app.command()
+def collection(
+    collection: Annotated[
+        list[str], typer.Option("--collection", help="Path(s) to collection CSV/JSON file(s).")
+    ],
+    color: Annotated[
+        str | None,
+        typer.Option(
+            "--color",
+            help="Exact color identity match (e.g. 'BW', 'R', '' for colourless).",
+        ),
+    ] = None,
+    in_identity: Annotated[
+        str | None,
+        typer.Option(
+            "--in-identity",
+            help="Subset match (cards castable in this identity, e.g. 'BW' includes B, W, colourless).",
+        ),
+    ] = None,
+    type_substr: Annotated[
+        str | None,
+        typer.Option("--type", help="Substring match against type_line (case-insensitive)."),
+    ] = None,
+    rarity: Annotated[
+        str | None,
+        typer.Option("--rarity", help="common|uncommon|rare|mythic|special."),
+    ] = None,
+    cmc: Annotated[int | None, typer.Option("--cmc", help="Exact CMC.")] = None,
+    cmc_max: Annotated[
+        int | None, typer.Option("--cmc-max", help="Maximum CMC (inclusive).")
+    ] = None,
+    legal: Annotated[
+        str | None,
+        typer.Option("--legal", help="Filter to cards legal in commander|brawl|standardbrawl."),
+    ] = None,
+    json_flag: Annotated[
+        bool, typer.Option("--json", help="Machine-readable JSON output.")
+    ] = False,
+    cache: CachePath = DB_PATH,
+) -> None:
+    """Filter the collection by color/type/rarity/CMC/legality.
+
+    Cards not present in the Scryfall cache are skipped; prime them via
+    ``manascope lookup`` or ``manascope prime`` first if you need them.
+    """
+    _print_notice(machine_readable=json_flag)
+    import json as json_mod
+
+    from manascope import scryfall as sc
+    from manascope.collection import (
+        filter_collection,
+        load_collection,
+        load_collections,
+    )
+
+    paths = [Path(p) for p in collection]
+    owned = load_collections(paths) if len(paths) > 1 else load_collection(paths[0])
+
+    conn = sc.open_cache(cache)
+    try:
+        results = filter_collection(
+            owned,
+            conn,
+            color_identity=color,
+            within_identity=in_identity,
+            type_substr=type_substr,
+            rarity=rarity,
+            cmc=cmc,
+            cmc_max=cmc_max,
+            legal_in=legal,
+        )
+    finally:
+        conn.close()
+
+    if json_flag:
+        print(json_mod.dumps(results))
+        return
+
+    if not results:
+        typer.echo("No cards match the given filters.")
+        return
+
+    typer.echo(f"{len(results)} card(s) match:")
+    for r in results:
+        ci = "".join(r["color_identity"]) or "C"
+        typer.echo(
+            f"  {r['count']:>2}x  {r['rarity'][:1].upper()}  CI={ci:<5}  "
+            f"cmc{int(r['cmc']):>2}  {r['type_line'][:38]:38}  {r['name']}"
+        )
+
+
+# Build
+
+
+@app.command()
+def build(
+    commander: Annotated[list[str], typer.Argument(help="Commander name (or slug).")],
+    collection: Annotated[
+        list[str], typer.Option("--collection", help="Path(s) to collection CSV/JSON file(s).")
+    ],
+    fmt: Annotated[
+        str,
+        typer.Option("--format", help="Format: commander|brawl|standardbrawl. Default brawl."),
+    ] = "brawl",
+    top: Annotated[int, typer.Option("--top", help="Number of EDHREC cards to evaluate.")] = 80,
+    lands: Annotated[
+        int | None,
+        typer.Option("--lands", help="Land count. Default 35 for 100-card, 22 for 60-card."),
+    ] = None,
+    output: Annotated[
+        str | None,
+        typer.Option("--output", "-o", help="Write decklist to this path instead of stdout."),
+    ] = None,
+    json_flag: Annotated[
+        bool, typer.Option("--json", help="Emit a JSON build report instead of decklist text.")
+    ] = False,
+    cache: CachePath = DB_PATH,
+) -> None:
+    """Draft a deck from a commander + collection using EDHREC recommendations.
+
+    Prerequisites: run ``manascope prime "<Commander>"`` first so that
+    EDHREC data and the recommended cards' Scryfall entries are cached.
+    The build command never hits the network.
+    """
+    _print_notice(machine_readable=json_flag)
+    from manascope.build import run as build_run
+
+    commander_name = " ".join(commander)
+    paths = [Path(p) for p in collection]
+    try:
+        build_run(
+            commander_name=commander_name,
+            collection_paths=paths,
+            fmt=fmt,
+            top=top,
+            lands=lands,
+            output=Path(output) if output else None,
+            json_flag=json_flag,
+            cache=Path(cache),
+        )
+    except ValueError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
 # Edhrec
 
 
@@ -452,6 +887,13 @@ def edhrec(
     json_flag: Annotated[
         bool, typer.Option("--json", help="Machine-readable JSON output.")
     ] = False,
+    top: Annotated[
+        int,
+        typer.Option(
+            "--top",
+            help="Number of recommended cards to emit in --json mode (sorted by synergy).",
+        ),
+    ] = 80,
     cache: CachePath = DB_PATH,
 ) -> None:
     """Display EDHREC commander data (type dist, curve, synergy, combos, themes)."""
@@ -470,7 +912,7 @@ def edhrec(
         raise typer.Exit(1)
 
     if quiet:
-        name = result.get("header", commander_input)
+        name = ec.commander_display_name(result, fallback=commander_input)
         typer.echo(f"EDHREC: {name} - {ec.num_decks(result):,} decks (cache primed)")
         db.close()
         return
@@ -480,13 +922,22 @@ def edhrec(
 
         td = ec.type_distribution(result)
         compact = {
-            "name": result.get("header", commander_input),
+            "name": ec.commander_display_name(result, fallback=commander_input),
             "num_decks": ec.num_decks(result),
             "type_distribution": td._asdict(),
             "mana_curve": ec.mana_curve(result),
             "high_synergy_cards": [
                 {"name": c.name, "synergy": c.synergy_pct, "inclusion": c.inclusion_pct}
                 for c in ec.high_synergy_cards(result)[:15]
+            ],
+            "recommended": [
+                {
+                    "name": c.name,
+                    "synergy": c.synergy_pct,
+                    "inclusion": c.inclusion_pct,
+                    "category": c.category,
+                }
+                for c in ec.all_recommended_cards(result)[:top]
             ],
             "combos": [c.description for c in ec.combos(result)] if ec.combos(result) else [],
             "themes": [{"name": t.name, "count": t.deck_count} for t in ec.tags(result)[:10]]

@@ -6,6 +6,8 @@ types. Used primarily by the CLI ``lookup`` command but designed as
 general-purpose utilities for any module that needs card presentation.
 """
 
+import sqlite3
+
 from manascope.collection import BASIC_LANDS
 from manascope.deck import (
     card_subtypes,
@@ -43,41 +45,73 @@ _NOTABLE_TYPES: set[str] = {
 }
 
 
-def _card_to_json(card: dict) -> dict:
-    """Build a compact, agent-friendly dict from a Scryfall card."""
+def _card_to_json(
+    card: dict,
+    *,
+    conn: sqlite3.Connection | None = None,
+    minimal: bool = False,
+) -> dict:
+    """Build a compact, agent-friendly dict from a Scryfall card.
+
+    Pass ``conn`` (an open Scryfall cache connection) to populate the
+    Arena-specific fields ``on_arena`` and ``arena_rarity``. Without it,
+    these are reported as ``False``/``None`` since paper-only printings
+    can't be distinguished from "never primed".
+
+    Set ``minimal=True`` to drop verbose fields (oracle_text, colors,
+    rarity, power/toughness/loyalty, notable_types, land_equiv,
+    produced_mana). The kept fields are the ones AGENTS.md requires for
+    deckbuilding decisions: name, type_line, mana_cost, cmc,
+    color_identity, subtypes, on_arena, arena_rarity, land_speed (lands
+    only), legalities, set, and collector_number. Cuts payload size by
+    ≈60-80% on cards with long oracle text.
+    """
     d: dict = {
         "name": card.get("name", "Unknown"),
         "type_line": type_line(card),
         "mana_cost": _mana_cost_display(card),
         "cmc": card.get("cmc", 0),
-        "colors": card.get("colors") or [],
         "color_identity": card.get("color_identity") or [],
-        "oracle_text": oracle_text(card),
-        "rarity": card.get("rarity", "unknown"),
         "set": card.get("set", "?").upper(),
         "collector_number": card.get("collector_number", "?"),
     }
+    if not minimal:
+        d["colors"] = card.get("colors") or []
+        d["oracle_text"] = oracle_text(card)
+        d["rarity"] = card.get("rarity", "unknown")
 
-    if card.get("power"):
-        d["power"] = card["power"]
-        d["toughness"] = card["toughness"]
-    if card.get("loyalty"):
-        d["loyalty"] = card["loyalty"]
+    if conn is not None:
+        # Arena availability is a cross-printing query, so it needs a cache
+        # handle. Defer the import to keep the module's top-level imports
+        # free of circular references through scryfall → deck → ...
+        from manascope.scryfall import arena_availability
+
+        on_arena, arena_rarity = arena_availability(conn, card.get("name", ""))
+        d["on_arena"] = on_arena
+        d["arena_rarity"] = arena_rarity
+
+    if not minimal:
+        if card.get("power"):
+            d["power"] = card["power"]
+            d["toughness"] = card["toughness"]
+        if card.get("loyalty"):
+            d["loyalty"] = card["loyalty"]
 
     subs = card_subtypes(card)
     if subs:
         d["subtypes"] = sorted(subs)
 
     if is_land(card):
-        d["produced_mana"] = sorted(produced_mana(card))
+        if not minimal:
+            d["produced_mana"] = sorted(produced_mana(card))
         d["land_speed"] = land_speed(card)
 
-    if is_creature(card):
+    if not minimal and is_creature(card):
         hits = subs & _NOTABLE_TYPES
         if hits:
             d["notable_types"] = sorted(t.title() for t in hits)
 
-    if is_mana_rock(card) or is_mana_creature(card):
+    if not minimal and (is_mana_rock(card) or is_mana_creature(card)):
         d["land_equiv"] = round(rock_land_equiv(card), 2)
 
     if card.get("legalities"):

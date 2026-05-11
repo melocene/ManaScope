@@ -11,7 +11,9 @@ from manascope.scryfall import (
     _read_capped,
     _ResponseTooLarge,
     _upsert_cards,
+    arena_availability,
     fetch_cards_by_names,
+    find_printings_by_name,
     get_card_by_name,
     open_cache,
 )
@@ -393,3 +395,112 @@ class TestReadCapped:
         resp.headers = {"Content-Length": "not-an-int"}
         resp.iter_content.return_value = iter([payload])
         assert _read_capped(resp, limit=1024) == payload
+
+
+# ── find_printings_by_name ───────────────────────────────────
+
+
+class TestFindPrintingsByName:
+    def test_returns_all_printings(self, cache_conn: sqlite3.Connection) -> None:
+        cards = [
+            _make_card("Foundry Inspector", "kld", "215", rarity="uncommon"),
+            _make_card("Foundry Inspector", "cmm", "385", rarity="common"),
+            _make_card("Foundry Inspector", "brr", "16", rarity="uncommon"),
+        ]
+        _seed_cache(cache_conn, cards)
+        results = find_printings_by_name(cache_conn, "Foundry Inspector")
+        sets = sorted(p.get("set", "") for p in results)
+        assert sets == ["brr", "cmm", "kld"]
+
+    def test_case_insensitive(self, cache_conn: sqlite3.Connection) -> None:
+        _seed_cache(cache_conn, [_make_card("Sol Ring", "c21", "263")])
+        assert len(find_printings_by_name(cache_conn, "sol ring")) == 1
+        assert len(find_printings_by_name(cache_conn, "SOL RING")) == 1
+
+    def test_dfc_front_face_fallback(self, cache_conn: sqlite3.Connection) -> None:
+        # Stored under the full "Front // Back" name; query with just the front.
+        _seed_cache(
+            cache_conn,
+            [_make_card("Greasefang, Okiba Boss // Some Backside", "neo", "220")],
+        )
+        results = find_printings_by_name(cache_conn, "Greasefang, Okiba Boss")
+        assert len(results) == 1
+
+    def test_uncached_returns_empty(self, cache_conn: sqlite3.Connection) -> None:
+        assert find_printings_by_name(cache_conn, "Phantom Card") == []
+
+
+# ── arena_availability ─────────────────────────────────────────────
+
+
+class TestArenaAvailability:
+    def test_no_printings_means_unavailable(self, cache_conn: sqlite3.Connection) -> None:
+        on_arena, rarity = arena_availability(cache_conn, "Phantom")
+        assert (on_arena, rarity) == (False, None)
+
+    def test_paper_only_printing_is_unavailable(self, cache_conn: sqlite3.Connection) -> None:
+        _seed_cache(
+            cache_conn,
+            [_make_card("Bone Shards", "mh2", "76", rarity="common", games=["paper", "mtgo"])],
+        )
+        on_arena, rarity = arena_availability(cache_conn, "Bone Shards")
+        assert (on_arena, rarity) == (False, None)
+
+    def test_arena_printing_returns_its_rarity(self, cache_conn: sqlite3.Connection) -> None:
+        _seed_cache(
+            cache_conn,
+            [_make_card("Bone Shards", "j21", "298", rarity="common", games=["arena"])],
+        )
+        on_arena, rarity = arena_availability(cache_conn, "Bone Shards")
+        assert (on_arena, rarity) == (True, "common")
+
+    def test_picks_cheapest_arena_rarity(self, cache_conn: sqlite3.Connection) -> None:
+        # Foundry Inspector is the canonical case: paper has a common printing,
+        # but on Arena only the uncommon BRR/KLR printings exist. The arena
+        # rarity must reflect what the user actually pays in wildcards.
+        _seed_cache(
+            cache_conn,
+            [
+                _make_card(
+                    "Foundry Inspector",
+                    "cmm",
+                    "385",
+                    rarity="common",
+                    games=["paper", "mtgo"],
+                ),
+                _make_card(
+                    "Foundry Inspector",
+                    "brr",
+                    "16",
+                    rarity="uncommon",
+                    games=["paper", "mtgo", "arena"],
+                ),
+                _make_card(
+                    "Foundry Inspector",
+                    "klr",
+                    "241",
+                    rarity="uncommon",
+                    games=["arena"],
+                ),
+            ],
+        )
+        on_arena, rarity = arena_availability(cache_conn, "Foundry Inspector")
+        assert on_arena is True
+        # Both Arena printings are uncommon; common is excluded because that
+        # printing isn't on Arena. So uncommon wins.
+        assert rarity == "uncommon"
+
+    def test_cheaper_rarity_wins_when_multiple_arena_printings(
+        self, cache_conn: sqlite3.Connection
+    ) -> None:
+        # Same card with both an Arena common AND an Arena rare — user should
+        # be told the *common* cost (cheapest viable wildcard).
+        _seed_cache(
+            cache_conn,
+            [
+                _make_card("X", "a", "1", rarity="rare", games=["arena"]),
+                _make_card("X", "b", "2", rarity="common", games=["arena"]),
+            ],
+        )
+        _, rarity = arena_availability(cache_conn, "X")
+        assert rarity == "common"

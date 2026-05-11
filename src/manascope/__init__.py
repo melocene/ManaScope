@@ -12,7 +12,7 @@ from pathlib import Path
 if isinstance(sys.stdout, io.TextIOWrapper):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 DB_PATH = Path(".cache/cache.db")
 
