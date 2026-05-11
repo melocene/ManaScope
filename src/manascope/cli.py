@@ -465,6 +465,19 @@ def verify(
             ),
         ),
     ] = False,
+    printings: Annotated[
+        bool,
+        typer.Option(
+            "--printings",
+            help=(
+                "Also verify each line's exact (SET) CN matches a non-foil printing "
+                "in the collection CSV. Adds 'wrong_printing' to the JSON output for "
+                "any decklist line whose card name is owned but at a different "
+                "printing. Requires a ManaBox-style CSV with Set code, Collector "
+                "number, and Foil columns; silently inactive for MTGA exports."
+            ),
+        ),
+    ] = False,
     cache: CachePath = DB_PATH,
 ) -> None:
     """Check which decklist cards are missing from the MTGA collection."""
@@ -476,7 +489,9 @@ def verify(
     from manascope.collection import (
         RARITY_ORDER,
         load_collection_names,
+        load_collection_printings,
         load_collections_names,
+        load_collections_printings,
     )
     from manascope.deck import DecklistParseError, parse_decklist
     from manascope.verify import verify_decklist
@@ -492,6 +507,13 @@ def verify(
         if len(collection) > 1
         else load_collection_names(Path(collection[0]))
     )
+    owned_printings = None
+    if printings:
+        owned_printings = (
+            load_collections_printings([Path(p) for p in collection])
+            if len(collection) > 1
+            else load_collection_printings(Path(collection[0]))
+        )
 
     # Always go through sc.open_cache so the schema is idempotently ensured
     # even if an empty or stray cache.db file happens to exist.
@@ -503,7 +525,7 @@ def verify(
         # Re-parse so missing-card reporting reflects the rewritten file.
         entries = parse_decklist(decklist, strict=strict)
 
-    result = verify_decklist(entries, owned, cache_conn)
+    result = verify_decklist(entries, owned, cache_conn, owned_printings=owned_printings)
 
     if json_flag:
         payload: dict = {
@@ -513,12 +535,15 @@ def verify(
             "missing": result["missing"],
             "by_rarity": {r: names for r, names in result["by_rarity"].items()},
         }
+        if "wrong_printing" in result:
+            payload["wrong_printing_count"] = result["wrong_printing_count"]
+            payload["wrong_printing"] = result["wrong_printing"]
         if fix_report is not None:
             payload["fix"] = fix_report
         print(json_mod.dumps(payload))
         if cache_conn:
             cache_conn.close()
-        if result["missing_count"]:
+        if result["missing_count"] or result.get("wrong_printing_count", 0):
             raise typer.Exit(1)
         return
 
@@ -532,11 +557,17 @@ def verify(
             f"{fix_report['unresolved']} unresolved."
         )
 
-    if result["missing_count"] == 0:
+    if result["missing_count"] == 0 and not result.get("wrong_printing_count"):
         typer.echo("* All cards owned - deck is importable without crafting.")
         if cache_conn:
             cache_conn.close()
         return
+
+    if result.get("wrong_printing_count"):
+        typer.echo("")
+        typer.echo(f"  [WRONG PRINTING] ({result['wrong_printing_count']})")
+        for wp in result["wrong_printing"]:
+            typer.echo(f"    * {wp['name']} ({wp['set']}) {wp['collector_number']}")
 
     typer.echo("")
     for rarity, cards in result["by_rarity"].items():

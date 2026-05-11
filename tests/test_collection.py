@@ -13,8 +13,10 @@ from manascope.collection import (
     filter_collection,
     load_collection,
     load_collection_names,
+    load_collection_printings,
     load_collections,
     load_collections_names,
+    load_collections_printings,
     lookup_rarity,
 )
 
@@ -330,6 +332,121 @@ class TestLoadCsvCollectionNames:
     def test_empty(self, empty_csv_file: Path) -> None:
         names = load_collection_names(empty_csv_file)
         assert names == set()
+
+
+class TestLoadCollectionPrintings:
+    """Per-printing extraction used by ``verify --printings``.
+
+    Returns ``(name_lower, set_lower, cn_lower)`` tuples for every owned
+    non-foil printing. Backs the regression for the bug where verify only
+    checked card names and ignored set/collector mismatches.
+    """
+
+    def test_returns_printing_tuples(self, csv_collection_file: Path) -> None:
+        printings = load_collection_printings(csv_collection_file)
+        assert ("sol ring", "c21", "263") in printings
+        assert ("lightning bolt", "m10", "146") in printings
+        assert ("plains", "one", "267") in printings
+
+    def test_dfc_front_face_indexed(self, csv_collection_file: Path) -> None:
+        """DFCs are present under both the full name and the front face."""
+        printings = load_collection_printings(csv_collection_file)
+        assert ("archangel avacyn // avacyn, the purifier", "soi", "5") in printings
+        assert ("archangel avacyn", "soi", "5") in printings
+
+    def test_excludes_foil_by_default(self, tmp_path: Path) -> None:
+        """Foil rows are excluded so users who don't play foils don't see
+        their foil-only copies counted as available printings.
+        """
+        lines = [
+            MANABOX_HEADER,
+            "Bitterblossom,SPG,Special Guests,133,foil,mythic,1,,,,,,,en,",
+            "Sol Ring,C21,Commander 2021,263,normal,uncommon,1,,,,,,,en,",
+        ]
+        p = tmp_path / "mixed_finishes.csv"
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        printings = load_collection_printings(p)
+        assert ("sol ring", "c21", "263") in printings
+        assert ("bitterblossom", "spg", "133") not in printings
+
+    def test_include_foil_optin(self, tmp_path: Path) -> None:
+        """Passing include_foil=True surfaces foil-only printings."""
+        lines = [
+            MANABOX_HEADER,
+            "Bitterblossom,SPG,Special Guests,133,foil,mythic,1,,,,,,,en,",
+        ]
+        p = tmp_path / "foil_only.csv"
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        printings = load_collection_printings(p, include_foil=True)
+        assert ("bitterblossom", "spg", "133") in printings
+
+    def test_zero_quantity_skipped(self, tmp_path: Path) -> None:
+        lines = [
+            MANABOX_HEADER,
+            _csv_row("Ghost Printing", quantity=0, set_code="FOO", cn="99"),
+            _csv_row("Real Printing", quantity=1, set_code="FOO", cn="100"),
+        ]
+        p = tmp_path / "zeros.csv"
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        printings = load_collection_printings(p)
+        assert ("ghost printing", "foo", "99") not in printings
+        assert ("real printing", "foo", "100") in printings
+
+    def test_collector_number_lowercased(self, tmp_path: Path) -> None:
+        """Suffixes like '170s' or unicode marks are preserved but lowercased
+        so case-insensitive matching against decklists works.
+        """
+        lines = [
+            MANABOX_HEADER,
+            "Awaken the Woods,PBRO,The Brothers' War Promos,170S,normal,rare,1,,,,,,,en,",
+        ]
+        p = tmp_path / "suffix.csv"
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        printings = load_collection_printings(p)
+        assert ("awaken the woods", "pbro", "170s") in printings
+
+    def test_json_returns_empty(self, collection_file: Path) -> None:
+        """JSON exports lack ManaBox printing columns; expect empty set
+        rather than half-populated data. Callers fall back to name-only
+        verification.
+        """
+        printings = load_collection_printings(collection_file)
+        assert printings == set()
+
+    def test_empty_csv(self, empty_csv_file: Path) -> None:
+        printings = load_collection_printings(empty_csv_file)
+        assert printings == set()
+
+    def test_mtga_csv_without_set_columns(self, tmp_path: Path) -> None:
+        """MTGA-style CSVs that lack Set code / Collector number columns
+        produce no printing keys (rows skipped silently).
+        """
+        header = "Name,Count"
+        lines = [header, "Sol Ring,1", "Lightning Bolt,3"]
+        p = tmp_path / "mtga.csv"
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        assert load_collection_printings(p) == set()
+
+    def test_load_collections_printings_merges(
+        self, csv_collection_file: Path, tmp_path: Path
+    ) -> None:
+        """Multi-file loader unions printings from each file."""
+        other_lines = [
+            MANABOX_HEADER,
+            _csv_row("Counterspell", quantity=1, set_code="STA", cn="15"),
+        ]
+        other = tmp_path / "other.csv"
+        other.write_text("\n".join(other_lines) + "\n", encoding="utf-8")
+        merged = load_collections_printings([csv_collection_file, other])
+        assert ("sol ring", "c21", "263") in merged
+        assert ("counterspell", "sta", "15") in merged
+
+    def test_load_collections_printings_single_path_delegates(
+        self, csv_collection_file: Path
+    ) -> None:
+        single = load_collection_printings(csv_collection_file)
+        multi = load_collections_printings([csv_collection_file])
+        assert single == multi
 
 
 # ── load_collections (multi-file merge) ──────────────────────────────────

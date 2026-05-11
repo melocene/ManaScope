@@ -23,6 +23,10 @@ Known key columns:
 | `Quantity` | 6 |
 | `Scryfall ID` | 8 |
 
+The `Set code`, `Collector number`, and `Foil` columns are what `verify --printings`
+uses to perform strict per-printing matching. `Foil` values are typically `normal`,
+`foil`, or `etched`; only `normal` is included by default.
+
 ### Arena: MTGA
 
 MTGA export schemas can vary and may include Arena-exclusive cards. Always inspect the header row before assuming column positions.

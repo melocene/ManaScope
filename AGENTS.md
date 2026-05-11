@@ -23,7 +23,7 @@ Never use rich/human output in agent sessions.
 | `edhrec` | `--json --top N` |
 | `lookup` | `--brief --json`; `--minimal` for trimmed JSON (drops oracle text) |
 | `prime` | `--quiet`; `--json` for primed-card report |
-| `verify` | `--json`; optional `--fix` |
+| `verify` | `--json`; optional `--fix` and `--printings` (paper-only, exact `(SET) CN` match against non-foil collection rows) |
 | `collection` | `--json` |
 | `build` | `--json` |
 
@@ -60,9 +60,10 @@ Slow ReDoS tests on demand:
 4. `uv run manascope pipeline --decklist <path> --collection <csv>`
 5. If `review.stats.skipped > 0`, prime again, then rerun pipeline.
 6. If printings look wrong, run `uv run manascope verify --decklist <path> --collection <csv> --fix --json`.
-7. Batch `lookup --brief --json` for all unfamiliar cards, gaps, lands, and wishlist candidates.
-8. Write/update the review using `docs/review-template.md`.
-9. Re-run pipeline after applied deck edits.
+7. To catch printing typos that resolve to *some* owned copy but not the listed `(SET) CN`, run `uv run manascope verify --decklist <path> --collection <csv> --printings --json`. ManaBox CSVs only; MTGA exports silently fall back to name-only verification.
+8. Batch `lookup --brief --json` for all unfamiliar cards, gaps, lands, and wishlist candidates.
+9. Write/update the review using `docs/review-template.md`.
+10. Re-run pipeline after applied deck edits.
 
 ## New Deck Workflow
 1. `uv run manascope prime "<Commander>" --quiet`

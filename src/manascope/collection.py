@@ -2,9 +2,10 @@
 
 Handles two CSV formats: ManaBox (physical collections with Quantity column)
 and MTGA (digital collections with Count column). Also supports JSON input.
-Exports ``load_collection``, ``load_collection_names``, ``lookup_rarity``,
-and the constants ``BASIC_LANDS`` and ``RARITY_ORDER``. Used by the CLI
-verify and review commands.
+Exports ``load_collection``, ``load_collection_names``,
+``load_collection_printings``, ``lookup_rarity``, and the constants
+``BASIC_LANDS`` and ``RARITY_ORDER``. Used by the CLI verify and review
+commands.
 """
 
 import csv
@@ -15,6 +16,12 @@ from pathlib import Path
 BASIC_LANDS: set[str] = {"plains", "island", "swamp", "mountain", "forest"}
 
 RARITY_ORDER: list[str] = ["mythic", "rare", "uncommon", "common"]
+
+# Type alias for a single owned printing key:
+# (name_lower, set_code_lower, collector_number_lower).
+# Collector numbers are kept as strings since some printings use suffixes
+# (e.g. "170s", "433\u2605").
+PrintingKey = tuple[str, str, str]
 
 
 def _load_csv(path: Path) -> dict[str, dict]:
@@ -50,6 +57,16 @@ def _load_csv(path: Path) -> dict[str, dict]:
                 else:
                     result[front]["count"] += count
     return result
+
+
+def _iter_csv_rows(path: Path) -> list[dict]:
+    """Yield raw CSV rows (preserves all columns, unlike :func:`_load_csv`).
+
+    Used by :func:`load_collection_printings` to access set/collector/foil
+    columns that the name-aggregating loader discards.
+    """
+    with path.open(newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
 
 
 def _load_json(path: Path) -> dict[str, dict]:
@@ -106,6 +123,79 @@ def load_collections(paths: list[Path]) -> dict[str, dict]:
 def load_collections_names(paths: list[Path]) -> set[str]:
     """Return the set of owned card names (lowercased) across multiple collection files."""
     return set(load_collections(paths).keys())
+
+
+def load_collection_printings(path: Path, *, include_foil: bool = False) -> set[PrintingKey]:
+    """Load owned printings as a set of ``(name_lower, set_lower, cn)`` tuples.
+
+    Only ManaBox-style CSV exports carry per-printing data (Set code,
+    Collector number, Foil columns). MTGA exports and JSON inputs lack
+    this metadata; for those, an empty set is returned and callers should
+    fall back to name-only verification.
+
+    Parameters
+    ----------
+    path
+        Collection file. Currently only ``.csv`` is supported for printing
+        extraction; other formats yield an empty set.
+    include_foil
+        When ``False`` (the default) only ``Foil == "normal"`` rows are
+        included. Set ``True`` to count foils, etched, and other finishes.
+
+    Notes
+    -----
+    - Collector numbers are preserved as strings (lowercased) because some
+      printings use suffixes such as ``170s`` or unicode marks.
+    - DFCs are also indexed under their front-face name so decklist entries
+      that omit the back face still match the printing.
+    - Quantities <= 0 are skipped.
+    """
+    if path.suffix.lower() != ".csv":
+        return set()
+
+    printings: set[PrintingKey] = set()
+    for row in _iter_csv_rows(path):
+        name = row.get("Name")
+        set_code = row.get("Set code") or row.get("Set")
+        cn = row.get("Collector number") or row.get("Collector Number")
+        if not name or not set_code or not cn:
+            continue
+
+        finish = (row.get("Foil") or "normal").strip().lower()
+        if not include_foil and finish != "normal":
+            continue
+
+        count_str = row.get("Count") or row.get("Quantity") or "1"
+        try:
+            count = int(count_str)
+        except ValueError:
+            count = 1
+        if count <= 0:
+            continue
+
+        key: PrintingKey = (name.lower(), set_code.lower(), cn.strip().lower())
+        printings.add(key)
+
+        # Index DFC front face under its own name so deck entries that
+        # only spell the front match the same printing.
+        low = name.lower()
+        if " // " in low:
+            front = low.split(" // ", 1)[0]
+            printings.add((front, set_code.lower(), cn.strip().lower()))
+
+    return printings
+
+
+def load_collections_printings(
+    paths: list[Path], *, include_foil: bool = False
+) -> set[PrintingKey]:
+    """Merge ``load_collection_printings`` results across multiple files."""
+    if len(paths) == 1:
+        return load_collection_printings(paths[0], include_foil=include_foil)
+    merged: set[PrintingKey] = set()
+    for p in paths:
+        merged |= load_collection_printings(p, include_foil=include_foil)
+    return merged
 
 
 def lookup_rarity(conn: sqlite3.Connection, card_name: str) -> str:

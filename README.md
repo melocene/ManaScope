@@ -106,9 +106,10 @@ uv run manascope review --decklist decks/commander/krenko.txt
 uv run manascope review --decklist decks/commander/krenko.txt --collection collections/Primary.csv
 ```
 
-**`verify`** — Check every card in your decklist against your collection CSV. Flags missing cards by rarity and handles DFCs. Requires `--collection`.
+**`verify`** — Check every card in your decklist against your collection CSV. Flags missing cards by rarity and handles DFCs. Pass `--printings` to additionally verify each line's exact `(SET) collector#` matches a non-foil printing in the collection (catches printing typos that would otherwise silently pass when *some* printing of the card is owned). Requires `--collection`.
 ```bash
 uv run manascope verify --decklist decks/commander/krenko.txt --collection collections/Primary.csv
+uv run manascope verify --decklist decks/commander/krenko.txt --collection collections/Primary.csv --printings
 ```
 
 **`lookup`** — Fetch authoritative Scryfall card data: mana cost, type line, rules text, land speed, produced mana, and more.
