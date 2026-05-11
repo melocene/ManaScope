@@ -650,6 +650,49 @@ class TestNumDecks:
         assert num_decks({}) == 0
 
 
+# ── commander_display_name ─────────────────────────────────────
+
+
+class TestCommanderDisplayName:
+    def test_strips_commander_suffix(self) -> None:
+        from manascope.edhrec import commander_display_name
+
+        assert (
+            commander_display_name({"header": "Greasefang, Okiba Boss (Commander)"})
+            == "Greasefang, Okiba Boss"
+        )
+
+    def test_strips_other_parenthetical_variants(self) -> None:
+        # EDHREC also uses (Budget), (Theme), etc. for variant pages.
+        from manascope.edhrec import commander_display_name
+
+        assert (
+            commander_display_name({"header": "Atraxa, Praetors' Voice (Budget)"})
+            == "Atraxa, Praetors' Voice"
+        )
+
+    def test_leaves_bare_name_alone(self) -> None:
+        from manascope.edhrec import commander_display_name
+
+        assert commander_display_name({"header": "Kaalia of the Vast"}) == "Kaalia of the Vast"
+
+    def test_uses_fallback_when_header_missing(self) -> None:
+        from manascope.edhrec import commander_display_name
+
+        assert commander_display_name({}, fallback="X") == "X"
+        assert commander_display_name({"header": None}, fallback="X") == "X"
+
+    def test_does_not_strip_internal_parentheticals(self) -> None:
+        # Only the *trailing* paren group should be removed; commas/parens
+        # inside the canonical name (none today, but defensive) must survive.
+        from manascope.edhrec import commander_display_name
+
+        assert (
+            commander_display_name({"header": "Some Commander (Foo) (Commander)"})
+            == "Some Commander (Foo)"
+        )
+
+
 # ── average_deck_price ───────────────────────────────────────────────────
 
 

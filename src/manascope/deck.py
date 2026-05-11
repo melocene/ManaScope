@@ -45,6 +45,14 @@ FORMAT_TARGETS: dict[str, tuple[float, float, str]] = {
     "standardbrawl": (20.0, 24.0, "22-24 raw"),
 }
 
+# Total deck size including the commander, by format. Used by analyze and
+# verify to flag decks that aren't the right total card count.
+FORMAT_DECK_SIZE: dict[str, int] = {
+    "commander": 100,
+    "brawl": 100,
+    "standardbrawl": 60,
+}
+
 # Scryfall legality field name for each supported format
 FORMAT_LEGALITY_FIELD: dict[str, str] = {
     "commander": "commander",

@@ -535,3 +535,16 @@ def average_deck_price(data: dict[str, Any]) -> float:
 def num_decks(data: dict[str, Any]) -> int:
     """Return the total number of decks sampled for this commander."""
     return int(data.get("num_decks_avg", 0))
+
+
+def commander_display_name(data: dict[str, Any], fallback: str = "") -> str:
+    """Return EDHREC's commander header without the trailing ``(Commander)`` suffix.
+
+    EDHREC's ``header`` field is e.g. ``"Greasefang, Okiba Boss (Commander)"``
+    or ``"Atraxa, Praetors' Voice (Budget)"`` for variant pages. Agents and
+    decklist tooling want the bare canonical card name, so we strip a single
+    trailing parenthetical. Mirrors the normalisation already done by
+    :func:`_upsert_commander` when storing the row's ``name`` column.
+    """
+    raw = data.get("header", fallback) or fallback
+    return re.sub(r"\s*\([^)]*\)\s*$", "", raw).strip()

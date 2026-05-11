@@ -206,6 +206,64 @@ def get_card_by_name(
     return json.loads(row[0]) if row else None
 
 
+def find_printings_by_name(
+    conn: sqlite3.Connection,
+    name: str,
+) -> list[dict]:
+    """Return every cached printing of a card (by canonical name).
+
+    Case-insensitive; falls back to a DFC front-face match when the bare
+    name doesn't have its own row. Returns an empty list when nothing is
+    cached. Used by callers that need to inspect cross-printing attributes
+    (e.g. "is this card on Arena under any printing?").
+    """
+    rows = conn.execute(
+        "SELECT full_json FROM cards WHERE name = ? COLLATE NOCASE",
+        (name,),
+    ).fetchall()
+    if not rows:
+        rows = conn.execute(
+            "SELECT full_json FROM cards WHERE name LIKE ? ESCAPE '\\' COLLATE NOCASE",
+            (_escape_like(name) + " // %",),
+        ).fetchall()
+    return [json.loads(r[0]) for r in rows]
+
+
+# Order matters: lower index = preferred when picking the "primary" Arena
+# printing. "special" is excluded since it covers things like timeshifted
+# rarities that aren't useful for wildcard math.
+_ARENA_RARITY_ORDER = ["common", "uncommon", "rare", "mythic"]
+
+
+def arena_availability(
+    conn: sqlite3.Connection,
+    name: str,
+) -> tuple[bool, str | None]:
+    """Return ``(on_arena, arena_rarity)`` for a card.
+
+    A card is ``on_arena`` if any cached printing has ``"arena"`` in its
+    ``games`` list. The reported rarity is the *cheapest* Arena printing's
+    rarity (common < uncommon < rare < mythic), since that's what drives
+    wildcard cost — e.g. Foundry Inspector is common on paper but only
+    available on Arena via uncommon printings.
+
+    Returns ``(False, None)`` when the card isn't cached at all or has no
+    Arena printings.
+    """
+    arena_rarities: list[str] = []
+    for printing in find_printings_by_name(conn, name):
+        if "arena" in (printing.get("games") or []):
+            arena_rarities.append(printing.get("rarity", "unknown"))
+    if not arena_rarities:
+        return False, None
+    # Pick the cheapest known rarity; unknowns sort last so they don't
+    # falsely advertise a free craft.
+    arena_rarities.sort(
+        key=lambda r: _ARENA_RARITY_ORDER.index(r) if r in _ARENA_RARITY_ORDER else 99
+    )
+    return True, arena_rarities[0]
+
+
 def iter_all_cards(conn: sqlite3.Connection) -> Iterator[dict]:
     """Yield every card in the cache as a full Scryfall card dict.
 

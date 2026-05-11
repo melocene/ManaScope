@@ -308,7 +308,7 @@ def run_edhrec_section(
                     "type": _type_abbr(card_data.get(c.name)),
                     "cmc": (card_data.get(c.name) or {}).get("cmc", 0),
                 }
-                for c in gap_unowned[:20]
+                for c in gap_unowned
             ],
         }
         if return_data:

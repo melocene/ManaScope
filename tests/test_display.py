@@ -460,6 +460,141 @@ class TestCardToJson:
         assert result["land_speed"] == "untapped"
         assert "plains" in result["subtypes"]
 
+    def test_no_arena_fields_without_conn(self, angel: dict) -> None:
+        # Without a cache connection, arena availability is unknown and
+        # the new fields shouldn't appear at all (avoids confusing False
+        # negatives where the cache simply hasn't been primed).
+        result = _card_to_json(angel)
+        assert "on_arena" not in result
+        assert "arena_rarity" not in result
+
+    def test_arena_fields_populated_with_conn(self, angel: dict, tmp_path) -> None:
+        # With a cache connection, the JSON includes on_arena/arena_rarity.
+        # The display module wires these through scryfall.arena_availability,
+        # which queries every printing for ``games: ["arena", ...]``.
+        import json
+        import sqlite3
+
+        from manascope.scryfall import open_cache
+
+        conn: sqlite3.Connection = open_cache(tmp_path / "c.db")
+        # Seed Serra Angel as an Arena-available rare printing.
+        payload = {
+            "name": "Serra Angel",
+            "set": "dmr",
+            "collector_number": "32",
+            "rarity": "rare",
+            "games": ["paper", "mtgo", "arena"],
+        }
+        conn.execute(
+            "INSERT INTO cards (set_code, collector_number, name, full_json) VALUES (?,?,?,?)",
+            ("dmr", "32", "Serra Angel", json.dumps(payload)),
+        )
+        conn.commit()
+        try:
+            result = _card_to_json(angel, conn=conn)
+        finally:
+            conn.close()
+        assert result["on_arena"] is True
+        assert result["arena_rarity"] == "rare"
+
+    def test_arena_false_when_only_paper_printing_cached(self, angel: dict, tmp_path) -> None:
+        # Critical for the Foundry-Inspector / Bone-Shards trap: a paper-only
+        # printing must never be reported as on_arena, even though the card
+        # *exists* in the cache.
+        import json
+        import sqlite3
+
+        from manascope.scryfall import open_cache
+
+        conn: sqlite3.Connection = open_cache(tmp_path / "c.db")
+        payload = {
+            "name": "Serra Angel",
+            "set": "dmr",
+            "collector_number": "32",
+            "rarity": "rare",
+            "games": ["paper", "mtgo"],
+        }
+        conn.execute(
+            "INSERT INTO cards (set_code, collector_number, name, full_json) VALUES (?,?,?,?)",
+            ("dmr", "32", "Serra Angel", json.dumps(payload)),
+        )
+        conn.commit()
+        try:
+            result = _card_to_json(angel, conn=conn)
+        finally:
+            conn.close()
+        assert result["on_arena"] is False
+        assert result["arena_rarity"] is None
+
+    def test_minimal_mode_drops_verbose_fields(self, angel: dict) -> None:
+        # Token-saving knob for batch agent lookups: oracle_text, colors,
+        # rarity, P/T, and notable_types should all be gone in minimal mode.
+        result = _card_to_json(angel, minimal=True)
+        for field in (
+            "oracle_text",
+            "colors",
+            "rarity",
+            "power",
+            "toughness",
+            "notable_types",
+            "land_equiv",
+            "produced_mana",
+            "loyalty",
+        ):
+            assert field not in result, f"{field} leaked into minimal output"
+
+    def test_minimal_mode_keeps_decision_fields(self, angel: dict) -> None:
+        # Fields AGENTS.md tells agents to read must always be present.
+        result = _card_to_json(angel, minimal=True)
+        assert result["name"] == "Serra Angel"
+        assert result["type_line"] == "Creature — Angel"
+        assert result["mana_cost"] == "{3}{W}{W}"
+        assert result["cmc"] == 5
+        assert result["color_identity"] == ["W"]
+        assert result["set"] == "DMR"
+        assert result["collector_number"] == "32"
+        assert "angel" in result["subtypes"]
+
+    def test_minimal_mode_keeps_land_speed(self, shock_land: dict) -> None:
+        # Land speed is required for evaluating mana bases; it must survive --minimal
+        # even though produced_mana is dropped.
+        result = _card_to_json(shock_land, minimal=True)
+        assert result["land_speed"] == "shock"
+        assert "produced_mana" not in result
+
+    def test_minimal_mode_keeps_legalities(self, card_with_legalities: dict) -> None:
+        # Legalities drive format filtering and are tiny — keep them.
+        result = _card_to_json(card_with_legalities, minimal=True)
+        assert "legalities" in result
+        assert "brawl" in result["legalities"]
+
+    def test_minimal_mode_keeps_arena_fields(self, angel: dict, tmp_path) -> None:
+        import json
+        import sqlite3
+
+        from manascope.scryfall import open_cache
+
+        conn: sqlite3.Connection = open_cache(tmp_path / "c.db")
+        payload = {
+            "name": "Serra Angel",
+            "set": "dmr",
+            "collector_number": "32",
+            "rarity": "rare",
+            "games": ["paper", "arena"],
+        }
+        conn.execute(
+            "INSERT INTO cards (set_code, collector_number, name, full_json) VALUES (?,?,?,?)",
+            ("dmr", "32", "Serra Angel", json.dumps(payload)),
+        )
+        conn.commit()
+        try:
+            result = _card_to_json(angel, conn=conn, minimal=True)
+        finally:
+            conn.close()
+        assert result["on_arena"] is True
+        assert result["arena_rarity"] == "rare"
+
 
 # ── Tests: _mana_cost_display ────────────────────────────────────────────
 
