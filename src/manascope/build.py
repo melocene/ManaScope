@@ -59,6 +59,23 @@ BASIC_FOR_COLOUR: dict[str, str] = {
     "G": "Forest",
 }
 
+# Colour → (set_code, collector_number) for a basic land printing emitted in
+# generated decklists. ManaScope only requires that the (SET, CN) pair resolve
+# to the correct basic on Scryfall - any complete basic-land cycle works.
+# ONE 267-271 is a stable, full-cycle, post-MTGA-rotation common cycle that
+# every cache will fetch successfully on demand. Do **not** synthesise a
+# printing from the commander's set: collector number 1 is almost never a
+# basic land in modern sets (e.g. NEO 1 is Ancestral Katana), which silently
+# corrupts downstream analyze/pipeline runs by typing the lines as whatever
+# card actually sits at that printing.
+BASIC_PRINTING: dict[str, tuple[str, str]] = {
+    "W": ("ONE", "267"),
+    "U": ("ONE", "268"),
+    "B": ("ONE", "269"),
+    "R": ("ONE", "270"),
+    "G": ("ONE", "271"),
+}
+
 
 def _format_line(card: dict, qty: int = 1) -> str:
     """Render a Scryfall card dict as a decklist line.
@@ -208,17 +225,18 @@ def build_decklist_text(
     for card in selected_spells:
         lines.append(_format_line(card))
 
-    # Basics: emit one consolidated line per colour (e.g. ``8 Plains (FDN) 1``)
+    # Basics: emit one consolidated line per colour (e.g. ``8 Plains (ONE) 267``)
     # so the file matches the canonical hand-edited form and Arena's importer
-    # collapses duplicates anyway. The commander's set is a fallback printing —
-    # any basic printing imports correctly.
-    set_code = commander_card.get("set", "").upper() or "FDN"
+    # collapses duplicates anyway. Each basic uses its real Scryfall printing
+    # from BASIC_PRINTING so that analyze/pipeline classify them as Lands
+    # rather than as whatever card happens to sit at the commander set's CN 1.
     for colour in WUBRG_ORDER:
         qty = basics.get(colour, 0)
         if qty <= 0:
             continue
         basic_name = BASIC_FOR_COLOUR[colour]
-        lines.append(f"{qty} {basic_name} ({set_code}) 1")
+        set_code, cn = BASIC_PRINTING[colour]
+        lines.append(f"{qty} {basic_name} ({set_code}) {cn}")
 
     return "\n".join(lines) + "\n"
 
@@ -300,6 +318,15 @@ def run(
 
     text = build_decklist_text(commander_card, selected, basics, fmt=fmt)
 
+    # ``--output`` writes the decklist to disk regardless of ``--json``; the
+    # two flags are orthogonal (file = the deck, stdout = the report). The
+    # earlier behaviour treated them as mutually exclusive and silently
+    # discarded the file write whenever JSON was requested, which broke the
+    # documented pipeline (build --json --output ... then pipeline --decklist).
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(text, encoding="utf-8")
+
     if json_flag:
         report = {
             "commander": {
@@ -333,11 +360,10 @@ def run(
             "not_cached": not_cached,
             "basics": basics,
             "decklist": text,
+            "output_path": str(output) if output is not None else None,
         }
         print(json.dumps(report))
-    elif output:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(text, encoding="utf-8")
+    elif output is not None:
         print(
             f"Wrote {len(selected) + sum(basics.values()) + 1}-card decklist to {output} "
             f"(spells: {len(selected)}/{spell_target}, "

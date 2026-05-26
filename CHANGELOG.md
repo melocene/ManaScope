@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `build` no longer emits `Plains (<commander_set>) 1` for basic lands. The old behaviour resolved to whatever card actually sat at collector number 1 of the commander's set (e.g. `Ancestral Katana` for NEO, `Coppercoat Vanguard` for MAT, `Sire of Seven Deaths` for FDN), silently corrupting downstream `analyze`/`pipeline` runs by reporting 0 lands and bucketing the basics under whatever type that card was. Basics now use a stable real printing (`ONE 267`-`ONE 271`) via the new `BASIC_PRINTING` constant in `manascope.build`.
+- `build --output <path>` is no longer suppressed by `--json`. The two flags are now orthogonal: when both are passed the decklist is written to disk *and* the JSON report is emitted on stdout. The report also gains a new `output_path` key. This restores the documented `build --json --output X` → `pipeline --decklist X` workflow.
+
+
 ## [0.2.0] - 2026-05-05
 
 ### Added

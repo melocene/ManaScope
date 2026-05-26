@@ -245,8 +245,10 @@ class TestBuildDecklistText:
         spells = [{"name": "Bone Shards", "set": "neo", "collector_number": "76"}]
         text = build_decklist_text(cmd, spells, {"B": 2}, fmt="brawl")
         lines = text.strip().split("\n")
-        # Basics are consolidated onto a single quantity line and follow the spells.
-        assert lines[-1] == "2 Swamp (NEO) 1"
+        # Basics are consolidated onto a single quantity line and follow the
+        # spells, using the canonical BASIC_PRINTING cycle (ONE 267-271) rather
+        # than the commander's set + CN 1, which would point at a non-land.
+        assert lines[-1] == "2 Swamp (ONE) 269"
         assert "1 Bone Shards (NEO) 76" in lines
 
     def test_basics_are_consolidated_per_colour(self) -> None:
@@ -255,8 +257,21 @@ class TestBuildDecklistText:
         # Exactly one line per colour, with the qty consolidated.
         assert text.count("Plains") == 1
         assert text.count("Swamp") == 1
-        assert "8 Plains (NEO) 1" in text
-        assert "9 Swamp (NEO) 1" in text
+        assert "8 Plains (ONE) 267" in text
+        assert "9 Swamp (ONE) 269" in text
+
+    def test_basic_printing_is_independent_of_commander_set(self) -> None:
+        # Regression: the build used to emit ``Plains (NEO) 1`` which actually
+        # resolves to Ancestral Katana on Scryfall, causing analyze to count
+        # the basics as artifacts and report 0 lands.
+        cmd_neo = {"name": "Greasefang", "set": "neo", "collector_number": "220"}
+        cmd_mat = {"name": "Narset", "set": "mat", "collector_number": "38"}
+        text_neo = build_decklist_text(cmd_neo, [], {"W": 4}, fmt="commander")
+        text_mat = build_decklist_text(cmd_mat, [], {"W": 4}, fmt="commander")
+        assert "4 Plains (ONE) 267" in text_neo
+        assert "4 Plains (ONE) 267" in text_mat
+        assert "(NEO) 1" not in text_neo
+        assert "(MAT) 1" not in text_mat
 
     def test_basics_emitted_in_wubrg_order(self) -> None:
         cmd = {"name": "X", "set": "neo", "collector_number": "1"}
@@ -302,3 +317,55 @@ class TestRun:
                 fmt="brawl",
                 cache=tmp_path / "cache.db",
             )
+
+    def test_output_writes_file_even_when_json_flag_set(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        mocker: pytest_mock.MockerFixture,
+    ) -> None:
+        # Regression: ``--json`` used to short-circuit ``--output`` so the
+        # documented pipeline (build --json --output X; pipeline --decklist X)
+        # silently produced no file. Now both flags are honoured: file is
+        # written *and* JSON is emitted on stdout.
+        csv = tmp_path / "coll.csv"
+        csv.write_text("Count,Name,Edition,Condition,Language,Foil,Tag\n", encoding="utf-8")
+        cmd_card = {
+            "name": "Greasefang, Okiba Boss",
+            "set": "neo",
+            "collector_number": "220",
+            "type_line": "Legendary Creature — Rat Pilot",
+            "color_identity": ["B", "W"],
+            "mana_cost": "{1}{W}{B}",
+        }
+        mocker.patch("manascope.build.sc.open_cache", return_value=mocker.MagicMock())
+        mocker.patch("manascope.build.sc.get_card_by_name", return_value=cmd_card)
+        mocker.patch("manascope.build.ec.fetch_commander", return_value={"some": "data"})
+        mocker.patch(
+            "manascope.build.select_spells",
+            return_value=([], [], []),
+        )
+
+        out_path = tmp_path / "decks" / "greasefang.txt"
+        build_mod.run(
+            commander_name="Greasefang, Okiba Boss",
+            collection_paths=[csv],
+            fmt="commander",
+            output=out_path,
+            json_flag=True,
+            cache=tmp_path / "cache.db",
+        )
+
+        # File written to disk…
+        assert out_path.exists(), "output file should be written even with --json"
+        body = out_path.read_text(encoding="utf-8")
+        assert "1 Greasefang, Okiba Boss (NEO) 220" in body
+        # …and a real basic-land printing used, not the buggy commander-set CN 1.
+        assert "(ONE) 26" in body  # matches any of 267-269 for B/W identity
+        assert "(NEO) 1\n" not in body
+
+        # JSON still emitted on stdout, and now includes the output path.
+        captured = capsys.readouterr()
+        payload = json.loads(captured.out)
+        assert payload["output_path"] == str(out_path)
+        assert payload["decklist"] == body
