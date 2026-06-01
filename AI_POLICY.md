@@ -4,7 +4,7 @@
 
 Please remember that `ManaScope` is maintained by humans.
 
-Every discussion, issue, and pull request is read and reviewed by people. These spaces are boundary points where contributors, maintainers, and users interact with each other and with the work. It is rude and disrespectful to approach that boundary with low-effort or unverified work, because it shifts the burden of understanding and validation onto others.
+Every discussion, issue, and pull request is read and reviewed by people. These spaces are boundary points where contributors, maintainers, and users interact with each other and with the work. Low-effort or unverified work shifts the burden of understanding and validation onto others, so we ask contributors to approach these spaces with care.
 
 In a perfect world, AI would produce high-quality, accurate work every time. Today, that depends heavily on the person driving the tool and reviewing its output.
 
@@ -24,13 +24,13 @@ This section is included to be transparent about the project's use of AI, and to
 
 **Note:** These rules apply to all contributors, including maintainers.
 
-#### **No primarily AI-generated (vibe coded) contributions are allowed.**
+#### **Do not submit work you do not understand.**
 
-If you cannot explain the code, justify the design, or make requested changes, then AI should not have been used for that contribution.
+AI may help draft or explore a change, but you must understand the result well enough to explain the code, justify the design, and make requested changes.
 
 #### **Keep a human in the loop.**
 
-AI may assist you, but a human contributor must direct the work, review the output, understand the result, and take responsibility for the submission. Autonomous agents may not contribute on your behalf. Pull requests that appear to have been created autonomously may be closed.
+AI may assist you, but a human contributor must direct the work, review the output, understand the result, and take responsibility for the submission. Autonomous agents may not contribute on your behalf without human review and ownership. Pull requests that appear to have been created autonomously may be closed.
 
 #### **All AI usage must be disclosed.**
 
@@ -64,6 +64,6 @@ Avoid large, opaque rewrites. Prefer small, focused changes that reviewers can u
 
 AI assistance is permitted only for code and text, subject to the rules above. Do not submit AI-generated images, art, video, audio, or other media. AI tools can also inadvertently reproduce copyrighted material in generated text or code, so audit your contribution before submitting.
 
-#### **Bad AI submitters may lose contribution privileges.**
+#### **Repeated low-effort submissions may limit future contributions.**
 
-We enjoy helping developers learn and grow. Repeatedly submitting unverified, low-effort, or AI-generated work that you cannot explain takes time away from everyone and may result in losing contribution privileges.
+We enjoy helping developers learn and grow. Repeatedly submitting unverified, low-effort, or AI-assisted work that you cannot explain takes time away from everyone and may result in losing contribution privileges.
