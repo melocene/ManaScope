@@ -69,6 +69,7 @@ extend-select = [
 ]
 ignore = [
     "D105", # Magic method docstrings (e.g. __repr__, __str__) — rarely useful
+    "S311", # Pseudo-random generators — used for deck shuffling, never cryptography
 ]
 
 [tool.ruff.lint.per-file-ignores]
