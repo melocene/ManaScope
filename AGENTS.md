@@ -12,6 +12,7 @@
 - Before describing a card's rules text, type, mechanics, or interactions in chat or in a review, you MUST have read its `oracle_text` from a current-session `lookup --brief --json` (not `--minimal`, which omits oracle text). Do not paraphrase from memory.
 - Batch work: one `lookup` with all needed names; one combined CSV search pattern; one `prime` per commander.
 - Never redirect command output to files or pipe through `head`, `tail`, `jq`, or `python -c`; dense modes are sized for direct context reads.
+- When modifying gitignored files (e.g. `collections/`, `.cache/`), use `edit_file` per change instead of shell scripts so edits are reviewable in the editor's diff view.
 
 ## Agent Output Modes
 Never use rich/human output in agent sessions.
@@ -27,6 +28,7 @@ Never use rich/human output in agent sessions.
 | `verify` | `--json`; optional `--fix` and `--printings` (paper-only, exact `(SET) CN` match against non-foil collection rows) |
 | `collection` | `--json` |
 | `build` | `--json` |
+| `hand` | `--agent` for dense one-line-per-hand/aggregate; `--json` for full structured output; `--hands N` for N individual hands in one call |
 
 Useful flags: `--format commander|brawl|standardbrawl`, `--top N`, `--strict`.
 
