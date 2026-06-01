@@ -881,6 +881,90 @@ def build(
 
 
 @app.command()
+def hand(
+    decklist: Annotated[str, typer.Option(help="Path to the decklist .txt file.")],
+    trials: Annotated[
+        int,
+        typer.Option(
+            "--trials",
+            help="Number of Monte-Carlo simulations for aggregate stats (use 1 for single hand).",
+        ),
+    ] = 1,
+    hands: Annotated[
+        int,
+        typer.Option(
+            "--hands",
+            help="Render N individual opening hands (mutually exclusive with --trials > 1).",
+        ),
+    ] = 1,
+    play_to: Annotated[
+        int,
+        typer.Option(
+            "--play-to",
+            help="Draw N additional cards after the keep decision (simulate turn N).",
+        ),
+    ] = 0,
+    mulligan_to: Annotated[
+        int | None,
+        typer.Option(
+            "--mulligan-to",
+            help="Auto-mulligan any hand outside [2, N] lands. Omit to disable.",
+        ),
+    ] = None,
+    seed: Annotated[
+        int | None,
+        typer.Option("--seed", help="Seed the RNG for reproducible shuffles."),
+    ] = None,
+    fmt: Annotated[
+        str | None,
+        typer.Option("--format", help="Override format (commander|brawl|standardbrawl)."),
+    ] = None,
+    json_flag: Annotated[bool, typer.Option("--json", help="Output pure JSON format.")] = False,
+    agent: Annotated[
+        bool,
+        typer.Option(
+            "--agent",
+            help="Dense one-line-per-hand (or per-aggregate) output for agent use.",
+        ),
+    ] = False,
+    strict: Annotated[
+        bool,
+        typer.Option("--strict", help="Fail (exit code 1) on any malformed decklist line."),
+    ] = False,
+    cache: CachePath = DB_PATH,
+) -> None:
+    """Simulate opening hands from a decklist (single hand or Monte-Carlo aggregate)."""
+    _print_notice(machine_readable=json_flag or agent)
+    from manascope.deck import DecklistParseError
+    from manascope.hand import run as hand_run
+
+    if hands > 1 and trials > 1:
+        typer.echo(
+            "ERROR: --hands and --trials are mutually exclusive when both > 1.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    try:
+        hand_run(
+            decklist=decklist,
+            cache=cache,
+            fmt=fmt,
+            trials=trials,
+            hands=hands,
+            play_to=play_to,
+            mulligan_to=mulligan_to,
+            seed=seed,
+            json_flag=json_flag,
+            agent=agent,
+            strict=strict,
+        )
+    except DecklistParseError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
+@app.command()
 def edhrec(
     commander: Annotated[list[str], typer.Argument(help="Commander name or slug.")],
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Single summary line.")] = False,

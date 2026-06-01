@@ -26,9 +26,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "requests>=2.33.1",
+    "requests>=2.34.2",
     "rich>=15.0.0",
-    "typer>=0.25.1",
+    "typer>=0.26.5",
 ]
 
 [project.urls]
@@ -69,6 +69,7 @@ extend-select = [
 ]
 ignore = [
     "D105", # Magic method docstrings (e.g. __repr__, __str__) — rarely useful
+    "S311", # Pseudo-random generators — used for deck shuffling, never cryptography
 ]
 
 [tool.ruff.lint.per-file-ignores]

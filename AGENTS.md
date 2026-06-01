@@ -9,8 +9,10 @@
 - Ignore directories starting with `_` or `.`, prices, budget, and paper rarity unless explicitly relevant.
 - Never invent card attributes, set codes, collector numbers, legality, land speed, or Arena rarity.
 - Card data must come from current-session `lookup --brief --json`; never rely on memory, name, or art.
+- Before describing a card's rules text, type, mechanics, or interactions in chat or in a review, you MUST have read its `oracle_text` from a current-session `lookup --brief --json` (not `--minimal`, which omits oracle text). Do not paraphrase from memory.
 - Batch work: one `lookup` with all needed names; one combined CSV search pattern; one `prime` per commander.
 - Never redirect command output to files or pipe through `head`, `tail`, `jq`, or `python -c`; dense modes are sized for direct context reads.
+- When modifying gitignored files (e.g. `collections/`, `.cache/`), use `edit_file` per change instead of shell scripts so edits are reviewable in the editor's diff view.
 
 ## Agent Output Modes
 Never use rich/human output in agent sessions.
@@ -26,6 +28,7 @@ Never use rich/human output in agent sessions.
 | `verify` | `--json`; optional `--fix` and `--printings` (paper-only, exact `(SET) CN` match against non-foil collection rows) |
 | `collection` | `--json` |
 | `build` | `--json` |
+| `hand` | `--agent` for dense one-line-per-hand/aggregate; `--json` for full structured output; `--hands N` for N individual hands in one call |
 
 Useful flags: `--format commander|brawl|standardbrawl`, `--top N`, `--strict`.
 
@@ -48,6 +51,9 @@ Slow ReDoS tests on demand:
 ## Card Data Rules
 - Always read `type_line`, `land_speed`, `subtypes`, `color_identity`, `on_arena`, and `arena_rarity` when relevant.
 - For Arena wildcard math, trust `arena_rarity`, not paper `rarity`.
+- Arena ownership is shared across decks: 1 owned copy covers a card in every singleton-format deck (Brawl, Historic Brawl, Commander) simultaneously. Only Standard/Historic/Timeless constructed need up to 4 copies. When recommending crafts, treat ownership of ≥1 copy as fully sufficient for singleton formats and never recommend crafting additional copies for Brawl-only use.
+- Brawl on Arena is 1v1 with random matchmaking; there are no pods, no pre-arranged opponents, and no "local meta" to read. Do not recommend meta-call cards or sideboard-style swaps based on expected opponents. Evaluate cards against the broad Brawl ladder, not a known group.
+- When evaluating wildcard spend, always grep the collection CSV for each candidate first (handling quoted comma-names like `"Sheoldred, the Apocalypse"`); do not assume a card is missing without checking.
 - Check commander color identity before recommending or adding cards.
 - Evaluate lands like spells: speed, subtypes, fixing, utility, and additive type changes.
 - If collection data looks stale, ask the user to re-export before substituting alternatives.
