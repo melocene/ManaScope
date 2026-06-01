@@ -8,7 +8,7 @@ Every discussion, issue, and pull request is read and reviewed by people. These 
 
 In a perfect world, AI would produce high-quality, accurate work every time. Today, that depends heavily on the person driving the tool and reviewing its output.
 
-This policy is adapted from, and inspired by, the AI policies of other open source projects such as [Ghostty](https://github.com/ghostty-org/ghostty/blob/main/AI_POLICY.md), [KeePassXC](https://github.com/keepassreboot/keepassxc?tab=readme-ov-file#generative-ai), [uv](https://github.com/astral-sh/.github/blob/main/AI_POLICY.md), [ripgrep](https://github.com/BurntSushi/ripgrep/blob/master/AI_POLICY.md), and [ddrand](https://github.com/melocene/ddrand/blob/main/AI_POLICY.md).
+This policy is adapted from, and inspired by, the AI policies of other open source projects such as [Ghostty](https://github.com/ghostty-org/ghostty/blob/main/AI_POLICY.md), [KeePassXC](https://github.com/keepassreboot/keepassxc?tab=readme-ov-file#generative-ai), [uv](https://github.com/astral-sh/.github/blob/main/AI_POLICY.md), and [ripgrep](https://github.com/BurntSushi/ripgrep/blob/master/AI_POLICY.md).
 
 ## AI Is Welcome Here
 
