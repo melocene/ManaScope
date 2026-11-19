@@ -1,99 +1,93 @@
 # ManaScope Agent Instructions
 
-## Critical Rules
-- Source of truth: `decks/<format>/<deck>.txt`; cache is never authoritative.
-- Use `uv run manascope <cmd>` for ManaScope CLI work. Do not call the CLI via bare `python`.
-- Do not modify decklists unless the user explicitly asks. Put proposed swaps in the review file.
-- Do not print full decklists or full EDHREC lists in chat.
-- Confirm collection type before deck work: paper ManaBox vs MTGA Arena.
-- Ignore directories starting with `_` or `.`, prices, budget, and paper rarity unless explicitly relevant.
-- Never invent card attributes, set codes, collector numbers, legality, land speed, or Arena rarity.
-- Card data must come from current-session `lookup --brief --json`; never rely on memory, name, or art.
-- Before describing a card's rules text, type, mechanics, or interactions in chat or in a review, you MUST have read its `oracle_text` from a current-session `lookup --brief --json` (not `--minimal`, which omits oracle text). Do not paraphrase from memory.
-- Batch work: one `lookup` with all needed names; one combined CSV search pattern; one `prime` per commander.
-- Never redirect command output to files or pipe through `head`, `tail`, `jq`, or `python -c`; dense modes are sized for direct context reads.
-- When modifying gitignored files (e.g. `collections/`, `.cache/`), use `edit_file` per change instead of shell scripts so edits are reviewable in the editor's diff view.
+## Hard Rules
+These override everything below.
 
-## Agent Output Modes
-Never use rich/human output in agent sessions.
+1. Run the CLI as `just manascope <cmd>`. If `just` is not installed, use `UV_CACHE_DIR=.cache/uv uv run manascope <cmd>`; plain `uv run` fails in sandboxes where `~/.cache/uv` is read-only. Never call the CLI via bare `python`. Commands below use the `just` form; read any `uv run manascope ...` hint from the CLI or docs the same way.
+2. Never modify decklists unless the user explicitly asks; put proposed swaps in the review file. Decklists (`decks/<format>/<deck>.txt`) are the source of truth; the cache never is.
+3. Never state card facts from memory, name, or art: rules text, type, mechanics, interactions, legality, set code, collector number, land speed, or Arena rarity. Take them from a current-session `lookup --brief --json`. Before describing what a card does, read its `oracle_text` (`--minimal` omits it).
+4. Never print full decklists or full EDHREC lists in chat or reviews.
+5. Never pipe or redirect ManaScope CLI output (`head`, `tail`, `jq`, `python -c`, `>`). Agent output modes are sized to be read directly.
 
-| Command | Required mode |
+## Environment
+- Network is blocked by default. Request only the hosts needed: `json.edhrec.com` / `api.scryfall.com` for card and EDHREC fetches (`prime`, `edhrec`, `lookup`, stale cache refreshes); `pypi.org` and `files.pythonhosted.org` for dependency syncs.
+- `collections/` and `decks/` are gitignored, so search/list tools show them as empty. Check in the terminal (`ls collections/`, `head -1 collections/<file>.csv`) before concluding a file is missing. Shell inspection of files is fine; rule 5 covers CLI output only.
+- Edit gitignored files (`collections/`, `.cache/`) with `edit_file`, one change per call, not shell scripts, so edits appear in the diff view.
+- Prefix tool paths with `ManaScope/`; run terminal commands from the project root.
+- Ignore directories starting with `_` or `.`, and ignore prices, budget, and paper rarity unless the user raises them.
+
+## Deck Work
+
+### Before starting
+- Confirm the collection type: paper ManaBox or MTGA Arena. Schemas differ; see `docs/collections.md`.
+- Format auto-detects from `decks/commander/`, `decks/brawl/`, and `decks/standardbrawl/`; pass `--format` elsewhere.
+- Batch: one `lookup` for all names, one combined CSV grep pattern, one `prime` per commander.
+
+### Output modes
+Never use rich/human output.
+
+| Command | Mode |
 |--|--|
 | `analyze` | `--json` |
 | `review` | `--agent` |
-| `pipeline` | native JSON; includes `verify` when `--collection` is passed; `--summary` for one-line status |
+| `pipeline` | native JSON (includes `verify` when `--collection` is passed); `--summary` for one line |
 | `edhrec` | `--json --top N` |
-| `lookup` | `--brief --json`; `--minimal` for trimmed JSON (drops oracle text) |
-| `prime` | `--quiet`; `--json` for primed-card report |
-| `verify` | `--json`; optional `--fix` and `--printings` (paper-only, exact `(SET) CN` match against non-foil collection rows) |
+| `lookup` | `--brief --json`; `--minimal` drops oracle text |
+| `prime` | `--quiet`; `--json` for a primed-card report |
+| `verify` | `--json`; optional `--fix`, `--printings` |
 | `collection` | `--json` |
 | `build` | `--json` |
-| `hand` | `--agent` for dense one-line-per-hand/aggregate; `--json` for full structured output; `--hands N` for N individual hands in one call |
+| `hand` | `--agent` (one line per hand); `--json` (full); `--hands N` |
 
-Useful flags: `--format commander|brawl|standardbrawl`, `--top N`, `--strict`.
+Other useful flags: `--format commander|brawl|standardbrawl`, `--top N`, `--strict`.
 
-## Validation
-Run before declaring code changes complete:
+### Existing deck
+1. Resolve the commander from the decklist.
+2. `just manascope prime "<Commander>" --quiet`
+3. `just manascope edhrec "<Commander>" --json --top N`
+4. `just manascope pipeline --decklist <path> --collection <csv>`
+5. If `review.stats.skipped > 0`, prime again and rerun the pipeline.
+6. Printing problems (many owned cards showing as gaps usually means bad `(SET) CN` pairs):
+   - `just manascope verify --decklist <path> --collection <csv> --fix --json`
+   - Add `--printings` to catch typos that still match some owned copy. ManaBox only; MTGA falls back to name-only.
+7. One batched `lookup --brief --json` for every unfamiliar card, gap, land, and wishlist candidate.
+8. Write or update the review (see Review Files).
+9. After applied deck edits, rerun the pipeline.
 
-`uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/ && uv run ty check src/ && uv run python -m pytest tests/`
+### New deck
+1. `just manascope prime "<Commander>" --quiet`
+2. `just manascope build "<Commander>" --collection <csv> --format <fmt> --json --output decks/<fmt>/<deck>.txt`
+3. Inspect the JSON gaps and unowned candidates.
+4. Owned alternatives: `just manascope collection --collection <csv> --in-identity <CI> --type <kw> --legal <fmt> --json`
+5. `just manascope pipeline --decklist <path> --collection <csv>`
 
-Slow ReDoS tests on demand:
-
-`uv run python -m pytest tests/ -m slow`
-
-## Decklist Format
-- All lines: `<qty> <name> (<set>) <collector#>`.
-- Commander paper: first line is commander, no headers, full DFC names, exactly 100 cards.
-- Brawl: `Commander` and `Deck` headers, front-face names only, exactly 100 cards.
-- Standard Brawl: `Commander` and `Deck` headers, front-face names only, exactly 60 cards.
+### Decklist format
+- Every line: `<qty> <name> (<set>) <collector#>`.
+- Commander (paper): commander on the first line, no headers, full DFC names, exactly 100 cards.
+- Brawl / Standard Brawl: `Commander` and `Deck` headers, front-face names only for DFCs, Sagas, and Adventures, exactly 100 / 60 cards.
 - After every deck edit, run `analyze --json` and confirm `cards.ok`.
 
-## Card Data Rules
-- Always read `type_line`, `land_speed`, `subtypes`, `color_identity`, `on_arena`, and `arena_rarity` when relevant.
-- For Arena wildcard math, trust `arena_rarity`, not paper `rarity`.
-- Arena ownership is shared across decks: 1 owned copy covers a card in every singleton-format deck (Brawl, Historic Brawl, Commander) simultaneously. Only Standard/Historic/Timeless constructed need up to 4 copies. When recommending crafts, treat ownership of ≥1 copy as fully sufficient for singleton formats and never recommend crafting additional copies for Brawl-only use.
-- Brawl on Arena is 1v1 with random matchmaking; there are no pods, no pre-arranged opponents, and no "local meta" to read. Do not recommend meta-call cards or sideboard-style swaps based on expected opponents. Evaluate cards against the broad Brawl ladder, not a known group.
-- When evaluating wildcard spend, always grep the collection CSV for each candidate first (handling quoted comma-names like `"Sheoldred, the Apocalypse"`); do not assume a card is missing without checking.
-- Check commander color identity before recommending or adding cards.
-- Evaluate lands like spells: speed, subtypes, fixing, utility, and additive type changes.
-- If collection data looks stale, ask the user to re-export before substituting alternatives.
-- Use front-face names only for DFCs/Sagas/Adventures in Brawl and Standard Brawl; paper Commander may use full names.
+### Card evaluation
+- Read `type_line`, `subtypes`, `color_identity`, `land_speed`, `on_arena`, and `arena_rarity` as relevant.
+- A card's `color_identity` must be a subset of the commander's. Review/build can silently skip out-of-identity cards, so check before recommending or adding.
+- Evaluate lands like spells: speed, subtypes, fixing, utility, and additive type changes. Prefer conditional or shock duals over tapped duals when owned and legal.
+- Ownership: `collection` skips cards missing from the Scryfall cache, so grep the collection CSV before calling a card unowned or spending a wildcard (handle quoted comma names like `"Sheoldred, the Apocalypse"`). If the data looks stale (e.g. the user just crafted a card), ask for a fresh export instead of substituting.
 
-## Existing Deck Workflow
-1. Resolve commander from the decklist.
-2. `uv run manascope prime "<Commander>" --quiet`
-3. `uv run manascope edhrec "<Commander>" --json --top N`
-4. `uv run manascope pipeline --decklist <path> --collection <csv>`
-5. If `review.stats.skipped > 0`, prime again, then rerun pipeline.
-6. If printings look wrong, run `uv run manascope verify --decklist <path> --collection <csv> --fix --json`.
-7. To catch printing typos that resolve to *some* owned copy but not the listed `(SET) CN`, run `uv run manascope verify --decklist <path> --collection <csv> --printings --json`. ManaBox CSVs only; MTGA exports silently fall back to name-only verification.
-8. Batch `lookup --brief --json` for all unfamiliar cards, gaps, lands, and wishlist candidates.
-9. Write/update the review using `docs/review-template.md`.
-10. Re-run pipeline after applied deck edits.
+### Arena
+- Wildcard math uses `arena_rarity`, never paper `rarity`; they can differ (e.g. Foundry Inspector is paper-common but Arena-uncommon in KLR/BRR).
+- One owned copy covers every singleton deck (Brawl, Historic Brawl, Commander). Never recommend extra copies for Brawl; only Standard/Historic/Timeless constructed need up to 4.
+- Arena Brawl is 1v1 with random matchmaking: no pods, no local meta. Judge cards against the broad ladder; no meta calls or sideboard-style picks.
 
-## New Deck Workflow
-1. `uv run manascope prime "<Commander>" --quiet`
-2. `uv run manascope build "<Commander>" --collection <csv> --format <fmt> --json --output decks/<fmt>/<deck>.txt`
-3. Inspect JSON gaps and unowned candidates.
-4. Use `uv run manascope collection --collection <csv> --color <CI> --type <kw> --legal <fmt> --json` for owned alternatives.
-5. Run `uv run manascope pipeline --decklist <path> --collection <csv>`.
+### EDHREC lift
+- EDHREC replaced synergy % with **lift**: how often decks with this commander run the card compared with random chance. `1.0` = no association, `3.2` = 3.2x as often, below `1.0` = less often. It is a ratio, not a percentage.
+- Write it as `3.2x lift`; never call it "synergy" or show it as `%`.
+- Weigh lift with `inclusion`: high lift can be a niche pick. Staples like Sol Ring sit near `1.0` because everyone plays them, so low lift alone is not a cut signal.
+- `"lift": null` plus a `synergy` key means the cached page predates lift. Label it legacy synergy and never compare it with lift.
 
-## Review Files
-- Place reviews in the same directory as the deck file, named `<commander>-review.md` (e.g. `decks/brawl/greasefang-review.md`).
-- Keep reviews terse and human-readable.
-- Include swaps, owned omissions, wishlist, mana-base notes, combo lines, wildcard needs, final verdict, and deck path.
-- Do not include full decklists or full EDHREC lists.
+### Review files
+- Save next to the deck as `<commander>-review.md` (e.g. `decks/brawl/greasefang-review.md`), following the sections in `docs/review-template.md`. Keep it terse.
+- Every swap names both the card going OUT and the card coming IN. Without a concrete cut, label the card as a flex/bench consideration, not a swap.
 
-## Collections
-- Paper ManaBox and MTGA Arena CSVs differ; confirm which one the user provided.
-- Prefer `collection --json`, `verify --json`, and `pipeline` over manual CSV parsing.
-- If manual parsing is unavoidable, inspect headers first; see `docs/collections.md`.
-
-## Project Layout
-- Code: `src/manascope/`
-- Decks: `decks/<format>/`
-- Collections: `collections/`
-- Cache: `.cache/cache.db`
-- Prefix file paths with `ManaScope/` in read/write/search tools.
-- In terminal, work from the project root.
-- Format auto-detects from `decks/commander/`, `decks/brawl/`, and `decks/standardbrawl/`; use `--format` outside those paths.
+## Code Changes
+- Code: `src/manascope/`; tests: `tests/`; cache: `.cache/cache.db`.
+- Before declaring changes complete, run `just check` (ruff, format check, ty, pytest). Slow ReDoS tests: `just test-slow`. Without `just`, run the commands in the README's Testing & Validation section, each prefixed with `UV_CACHE_DIR=.cache/uv`.

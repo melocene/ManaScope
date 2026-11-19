@@ -7,9 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `hand` command — opening-hand simulator. Renders one or more hands (`--hands N`) or a Monte-Carlo aggregate (`--trials N`), with `--mulligan-to`, `--play-to`, and `--seed`. Supports `--json` and `--agent` output.
+- `Justfile` with `check`, `test-slow`, `update-deps`, and `manascope` recipes. Recipes use a project-local uv cache (`.cache/uv`) so they also work in sandboxed agent environments; `AGENTS.md` now directs agents to `just manascope` / `just check`, with a plain `uv run` fallback when `just` is not installed.
+
+### Changed
+- EDHREC scores now use **lift** instead of the retired synergy percentage. `edhrec --json`, `review`/`pipeline` JSON, and `build --json` emit a `lift` multiplier per card (`1.0` = no association with the commander). The `synergy` key is emitted only alongside `"lift": null` for cached pages that predate lift. Recommendations are ranked by lift; human/agent text shows `3.26x` instead of `12%`.
+- `edhrec --json` key `high_synergy_cards` is renamed to `high_lift_cards`; `manascope.edhrec.high_synergy_cards` is renamed to `high_lift_cards` and reads EDHREC's new `highliftcards` list, falling back to `highsynergycards` for legacy cache entries.
+- Cached EDHREC pages without lift scores are re-fetched after 1 day instead of 14 (`PRE_LIFT_TTL_DAYS`), falling back to the cached copy when offline.
+- `AGENTS.md` restructured around hard rules and workflows; `docs/agent-notes.md` merged into it and removed.
+- Dependencies updated. Minimum versions in `pyproject.toml` now match `uv.lock`: `typer` 0.29.2; dev tools `pytest` 9.2.0, `ruff` 0.17.5, `ty` 0.0.107.
+- `README.md` and `AI_POLICY.md` now describe the AI-assisted workflow consistently: agent-written changes are human-directed, diff-reviewed, and verified with unit tests and live testing.
+
 ### Fixed
+- `num_decks()` reads the deck count from `container.json_dict.card.num_decks` when EDHREC omits `num_decks_avg` (lift-era payloads), so review/prime no longer report a 0-deck sample.
 - `build` no longer emits `Plains (<commander_set>) 1` for basic lands. The old behaviour resolved to whatever card actually sat at collector number 1 of the commander's set (e.g. `Ancestral Katana` for NEO, `Coppercoat Vanguard` for MAT, `Sire of Seven Deaths` for FDN), silently corrupting downstream `analyze`/`pipeline` runs by reporting 0 lands and bucketing the basics under whatever type that card was. Basics now use a stable real printing (`ONE 267`-`ONE 271`) via the new `BASIC_PRINTING` constant in `manascope.build`.
 - `build --output <path>` is no longer suppressed by `--json`. The two flags are now orthogonal: when both are passed the decklist is written to disk *and* the JSON report is emitted on stdout. The report also gains a new `output_path` key. This restores the documented `build --json --output X` → `pipeline --decklist X` workflow.
+- Documentation brought in line with current behaviour: Standard Brawl decks are 60 cards (not 100), CI runs on pull requests (not every push), and MTGA collection CSVs are documented as supported (name-only; no `--printings` matching). `README.md` now covers the `build`, `collection`, and `hand` commands.
 
 
 ## [0.2.0] - 2026-05-05

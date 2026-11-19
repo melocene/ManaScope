@@ -14,7 +14,7 @@ This policy is adapted from, and inspired by, the AI policies of other open sour
 
 Generative AI is becoming a first-party feature in many development environments, including GitHub itself. We are not trying to ban AI usage.
 
-`ManaScope` is written with AI assistance, but it is not vibe coded or primarily written by AI. AI tools can be productive for tasks such as explaining unfamiliar code, finding related code paths, drafting refactors for human review, summarizing issues, and automating tedious edits.
+`ManaScope` is developed with AI coding agents, but it is not vibe coded. A human directs the work, reviews every diff an agent proposes, and verifies changes with unit tests and live testing. AI tools can also be productive for tasks such as explaining unfamiliar code, finding related code paths, drafting refactors for human review, summarizing issues, and automating tedious edits.
 
 This section is included to be transparent about the project's use of AI, and to address the misconception that this policy is anti-AI.
 

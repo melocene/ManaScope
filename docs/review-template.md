@@ -23,8 +23,11 @@ Keep reviews terse, human-readable, and focused on decisions. Do not include ful
 ## Wildcards to Spend
 <table: Card | Arena Set | Rarity | Why — only cards with on_arena=true>
 
+## Proposed Swaps
+<table: Priority | OUT | IN | Why. Every proposed swap must name both the cut and the add. If there is no concrete cut, list the card under flex/bench considerations instead of calling it a swap.>
+
 ## What Changed vs. Previous Pass
-<bullet list of swaps with reasons; omit on first pass>
+<bullet list of OUT → IN swaps with reasons; omit on first pass>
 
 ## Mana Base
 <dual lands, utility, fetches, basics; color-source summary>
@@ -33,7 +36,7 @@ Keep reviews terse, human-readable, and focused on decisions. Do not include ful
 <table of EDHREC top-N picks the user owns but deliberately left out>
 
 ## Wishlist (future rare/mythic targets)
-<ranked list of unowned high-synergy cards that need rare/mythic wildcards>
+<ranked list of unowned high-lift cards that need rare/mythic wildcards; cite lift as `N.Nx`, never as synergy %>
 
 ## Final Verdict
 <one paragraph + path to decklist file>
