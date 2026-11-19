@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-18
+
 ### Added
 - `hand` command — opening-hand simulator. Renders one or more hands (`--hands N`) or a Monte-Carlo aggregate (`--trials N`), with `--mulligan-to`, `--play-to`, and `--seed`. Supports `--json` and `--agent` output.
 - `Justfile` with `check`, `test-slow`, `update-deps`, and `manascope` recipes. Recipes use a project-local uv cache (`.cache/uv`) so they also work in sandboxed agent environments; `AGENTS.md` now directs agents to `just manascope` / `just check`, with a plain `uv run` fallback when `just` is not installed.

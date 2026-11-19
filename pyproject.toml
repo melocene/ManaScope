@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "manascope"
-version = "0.2.0"
+version = "0.3.0"
 description = "MTG deck analysis toolkit: mana base, EDHREC review, collection verification, deck building, opening hands."
 readme = "README.md"
 requires-python = ">=3.14"
