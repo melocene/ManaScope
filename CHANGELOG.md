@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `README.md` and `AI_POLICY.md` now describe the AI-assisted workflow consistently: agent-written changes are human-directed, diff-reviewed, and verified with unit tests and live testing.
 
 ### Fixed
+- EDHREC lookups for double-faced commanders given by their full `Front // Back` name now use the front-face slug EDHREC expects (e.g. `esika-god-of-the-tree`) instead of slugifying both faces.
 - `num_decks()` reads the deck count from `container.json_dict.card.num_decks` when EDHREC omits `num_decks_avg` (lift-era payloads), so review/prime no longer report a 0-deck sample.
 - `build` no longer emits `Plains (<commander_set>) 1` for basic lands. The old behaviour resolved to whatever card actually sat at collector number 1 of the commander's set (e.g. `Ancestral Katana` for NEO, `Coppercoat Vanguard` for MAT, `Sire of Seven Deaths` for FDN), silently corrupting downstream `analyze`/`pipeline` runs by reporting 0 lands and bucketing the basics under whatever type that card was. Basics now use a stable real printing (`ONE 267`-`ONE 271`) via the new `BASIC_PRINTING` constant in `manascope.build`.
 - `build --output <path>` is no longer suppressed by `--json`. The two flags are now orthogonal: when both are passed the decklist is written to disk *and* the JSON report is emitted on stdout. The report also gains a new `output_path` key. This restores the documented `build --json --output X` → `pipeline --decklist X` workflow.

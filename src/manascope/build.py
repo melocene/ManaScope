@@ -148,7 +148,7 @@ def select_spells(
     """Return (selected, candidates_unowned, gaps_not_cached).
 
     *selected* is the list of card dicts chosen for the deck (size ≤
-    target_count, sorted by EDHREC synergy descending). *candidates_unowned*
+    target_count, sorted by EDHREC lift descending). *candidates_unowned*
     are EDHREC picks that pass legality + identity but the user does not
     own (useful for a wishlist). *gaps_not_cached* are EDHREC picks that
     couldn't be evaluated because their Scryfall data isn't cached.
@@ -168,7 +168,7 @@ def select_spells(
 
         cj = sc.get_card_by_name(conn, sc_card.name)
         if cj is None:
-            not_cached.append({"name": sc_card.name, "synergy": sc_card.synergy_pct})
+            not_cached.append({"name": sc_card.name, **sc_card.score_fields})
             continue
 
         if not is_legal(cj, fmt):
@@ -186,15 +186,15 @@ def select_spells(
 
         if canonical.lower() in owned:
             if len(selected) < target_count:
-                cj_with_syn = dict(cj)
-                cj_with_syn["_synergy"] = sc_card.synergy_pct
-                selected.append(cj_with_syn)
+                cj_with_score = dict(cj)
+                cj_with_score["_score"] = sc_card.score_fields
+                selected.append(cj_with_score)
                 selected_names.add(canonical.lower())
         else:
             unowned.append(
                 {
                     "name": canonical,
-                    "synergy": sc_card.synergy_pct,
+                    **sc_card.score_fields,
                     "rarity": cj.get("rarity", "unknown"),
                     "type_line": cj.get("type_line", ""),
                     "cmc": cj.get("cmc", 0),
@@ -349,7 +349,7 @@ def run(
             "selected": [
                 {
                     "name": c.get("name"),
-                    "synergy": c.get("_synergy", 0.0),
+                    **c.get("_score", {"lift": None}),
                     "rarity": c.get("rarity"),
                     "cmc": c.get("cmc", 0),
                     "type_line": c.get("type_line", ""),

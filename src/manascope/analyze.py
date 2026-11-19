@@ -336,7 +336,7 @@ def _output_json(stats: DeckStats) -> dict:
         "speed": stats.speed_counts,
         "balance": {},
         "curve": {k: v for k, v in sorted(stats.cmc_counter.items())},
-        "synergy": {"matches": len(set(c["name"] for c in stats.synergy_targets))}
+        "synergy": {"matches": len({c["name"] for c in stats.synergy_targets})}
         if stats.synergy_types
         else {},
     }
@@ -380,7 +380,7 @@ def _output_agent(stats: DeckStats) -> None:
     c_str = [f"{k}:{v}" for k, v in sorted(stats.cmc_counter.items())]
     print("[Curve] " + ", ".join(c_str))
     if stats.synergy_types:
-        n_syn = len(set(c["name"] for c in stats.synergy_targets))
+        n_syn = len({c["name"] for c in stats.synergy_targets})
         print(f"[Synergy] Matches:{n_syn}")
 
 
@@ -607,7 +607,7 @@ def _print_synergy(stats: DeckStats, *, compact: bool) -> None:
 
         print()
     if stats.synergy_types:
-        n_synergy = len(set(c["name"] for c in stats.synergy_targets))
+        n_synergy = len({c["name"] for c in stats.synergy_targets})
         synergy_type_names = "/".join(t.title() for t in sorted(stats.synergy_types))
         print(f"  Synergy matches ({synergy_type_names}): {n_synergy}")
     print()
@@ -689,7 +689,7 @@ def _print_assessment(stats: DeckStats) -> None:
         issues.append(f"Only {reliable_untapped} reliably untapped lands - risk of slow starts.")
 
     if stats.synergy_types:
-        n_synergy = len(set(c["name"] for c in stats.synergy_targets))
+        n_synergy = len({c["name"] for c in stats.synergy_targets})
         synergy_type_names = "/".join(t.title() for t in sorted(stats.synergy_types))
         if n_synergy >= 15:
             positives.append(

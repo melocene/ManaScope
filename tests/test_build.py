@@ -193,6 +193,19 @@ class TestSelectSpells:
         assert selected == []
         assert [c["name"] for c in unowned] == ["Bone Shards"]
 
+    def test_candidates_carry_lift(
+        self, cache: sqlite3.Connection, mocker: pytest_mock.MockerFixture
+    ) -> None:
+        mocker.patch(
+            "manascope.build.ec.all_recommended_cards",
+            return_value=[SynergyCard("Bone Shards", 0.1, 10, 100, "x", lift=4.2)],
+        )
+        _selected, unowned, _ = select_spells(
+            _commander(), {}, {}, cache, fmt="brawl", target_count=10, top=80
+        )
+        assert unowned[0]["lift"] == 4.2
+        assert "synergy" not in unowned[0]
+
     def test_basic_land_recommended_is_skipped(
         self, cache: sqlite3.Connection, mocker: pytest_mock.MockerFixture
     ) -> None:

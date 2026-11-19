@@ -302,7 +302,7 @@ def test_edhrec_json_flag(mocker: pytest_mock.MockerFixture) -> None:
     mock_td._asdict.return_value = {"Creature": 10}
     mocker.patch("manascope.edhrec.type_distribution", return_value=mock_td)
     mocker.patch("manascope.edhrec.mana_curve", return_value={"1": 5})
-    mocker.patch("manascope.edhrec.high_synergy_cards", return_value=[])
+    mocker.patch("manascope.edhrec.high_lift_cards", return_value=[])
     mocker.patch("manascope.edhrec.combos", return_value=[])
     mocker.patch("manascope.edhrec.tags", return_value=[])
 
@@ -315,7 +315,7 @@ def test_edhrec_json_flag(mocker: pytest_mock.MockerFixture) -> None:
 
 
 def test_edhrec_json_emits_full_recommended_list(mocker: pytest_mock.MockerFixture) -> None:
-    """--top N should expose all top-N recommendations (not just top-10 high-synergy).
+    """--top N should expose all top-N recommendations (not just top-10 high-lift).
 
     Regression for the agent workflow gap that forced bootstrapping a stub deck
     just to read the top-80 list out of `pipeline.review.gaps_owned`.
@@ -329,12 +329,19 @@ def test_edhrec_json_emits_full_recommended_list(mocker: pytest_mock.MockerFixtu
     td._asdict.return_value = {}
     mocker.patch("manascope.edhrec.type_distribution", return_value=td)
     mocker.patch("manascope.edhrec.mana_curve", return_value={})
-    mocker.patch("manascope.edhrec.high_synergy_cards", return_value=[])
+    mocker.patch("manascope.edhrec.high_lift_cards", return_value=[])
     mocker.patch("manascope.edhrec.combos", return_value=[])
     mocker.patch("manascope.edhrec.tags", return_value=[])
 
     fake_cards = [
-        SynergyCard(name=f"Card {i}", synergy=0.5, inclusion=10, potential_decks=100, category="x")
+        SynergyCard(
+            name=f"Card {i}",
+            synergy=0.5,
+            inclusion=10,
+            potential_decks=100,
+            category="x",
+            lift=2.5,
+        )
         for i in range(50)
     ]
     mocker.patch("manascope.edhrec.all_recommended_cards", return_value=fake_cards)
@@ -345,8 +352,11 @@ def test_edhrec_json_emits_full_recommended_list(mocker: pytest_mock.MockerFixtu
     assert "recommended" in output
     assert len(output["recommended"]) == 30
     assert output["recommended"][0]["name"] == "Card 0"
-    # Each entry carries name, synergy, inclusion, category for downstream filtering.
-    assert {"name", "synergy", "inclusion", "category"} <= output["recommended"][0].keys()
+    # Each entry carries name, lift, inclusion, category for downstream filtering.
+    assert {"name", "lift", "inclusion", "category"} <= output["recommended"][0].keys()
+    assert output["recommended"][0]["lift"] == 2.5
+    # Legacy synergy is only emitted when lift is unavailable.
+    assert "synergy" not in output["recommended"][0]
 
 
 def test_lookup_minimal_implies_json_and_passes_minimal_flag(

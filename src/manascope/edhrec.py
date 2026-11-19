@@ -1,8 +1,8 @@
-"""Fetches and caches EDHREC commander data (type distribution, synergy, combos, themes).
+"""Fetches and caches EDHREC commander data (type distribution, lift, combos, themes).
 
 Shares the SQLite cache in ``.cache/cache.db`` with :mod:`manascope.scryfall`.
 Commander pages are cached with a 14-day TTL; the raw JSON is stored as-is and
-parsed on demand via helper functions (``type_distribution``, ``high_synergy_cards``,
+parsed on demand via helper functions (``type_distribution``, ``high_lift_cards``,
 ``mana_curve``, ``combos``, ``tags``, etc.).  Lookup accepts either a display name
 or an EDHREC slug.  Used by ``cli.py`` (edhrec/prime commands) and ``review.py``.
 """
@@ -24,6 +24,10 @@ from manascope import DB_PATH, MAX_RESPONSE_BYTES
 
 JSON_API_URL = "https://json.edhrec.com/pages/commanders/{slug}.json"
 DEFAULT_TTL_DAYS = 14
+# Cached pages without EDHREC lift scores (pre-October 2026 payloads) are
+# re-fetched after this many days instead of DEFAULT_TTL_DAYS. Not zero, so a
+# page EDHREC still serves without lift is requested at most once per day.
+PRE_LIFT_TTL_DAYS = 1
 REQUEST_DELAY = 0.30  # 300 ms between requests (be a good citizen)
 # Network timeout (seconds). EDHREC responses are small JSON pages, so
 # a shorter timeout than Scryfall's /cards/collection payload is fine.
@@ -92,13 +96,21 @@ class TypeDistribution(NamedTuple):
 
 
 class SynergyCard(NamedTuple):
-    """A card recommendation from EDHREC with synergy/inclusion data."""
+    """A card recommendation from EDHREC with lift/inclusion data.
+
+    EDHREC replaced its synergy percentage with *lift*: how often the card is
+    run with this commander relative to random chance. ``1.0`` means no
+    association, ``3.0`` means three times as often as chance, and values below
+    ``1.0`` mean it is played less often than chance. Lift is a ratio, not a
+    percentage. ``synergy`` is kept only to rank pre-lift cache entries.
+    """
 
     name: str
-    synergy: float  # synergy score as a fraction (0.61 = 61%)
+    synergy: float  # legacy synergy score as a fraction (0.61 = 61%)
     inclusion: int  # number of decks including this card
     potential_decks: int  # total decks sampled
-    category: str  # which card list this came from (e.g. "highsynergycards")
+    category: str  # which card list this came from (e.g. "highliftcards")
+    lift: float | None = None  # lift multiplier; None for pre-lift payloads
 
     @property
     def inclusion_pct(self) -> float:
@@ -109,8 +121,37 @@ class SynergyCard(NamedTuple):
 
     @property
     def synergy_pct(self) -> float:
-        """Synergy score as a percentage."""
+        """Legacy synergy score as a percentage."""
         return round(self.synergy * 100, 1)
+
+    @property
+    def rank_key(self) -> tuple[bool, float]:
+        """Sort key: lift when available, legacy synergy otherwise.
+
+        Cards with lift always outrank cards without it, so the two scales
+        are never compared directly.
+        """
+        if self.lift is not None:
+            return (True, self.lift)
+        return (False, self.synergy)
+
+    @property
+    def score_label(self) -> str:
+        """Compact score for text output: ``3.26x`` (lift) or ``12.0%`` (legacy synergy)."""
+        if self.lift is not None:
+            return f"{self.lift:.2f}x"
+        return f"{self.synergy_pct}%"
+
+    @property
+    def score_fields(self) -> dict[str, float | None]:
+        """Score keys for JSON output.
+
+        ``lift`` is always present. ``synergy`` (percent) is added only when
+        lift is unavailable, i.e. the cached EDHREC page predates lift.
+        """
+        if self.lift is not None:
+            return {"lift": round(self.lift, 2)}
+        return {"lift": None, "synergy": self.synergy_pct}
 
 
 class Combo(NamedTuple):
@@ -172,8 +213,12 @@ def slugify(name: str) -> str:
         "Maralen, Fae Ascendant"  -> "maralen-fae-ascendant"
         "Kaalia of the Vast"      -> "kaalia-of-the-vast"
         "Oko, Lorwyn Liege"       -> "oko-lorwyn-liege"
+        "Esika, God of the Tree // The Prismatic Bridge" -> "esika-god-of-the-tree"
     """
     slug = name.lower()
+    # EDHREC pages for double-faced commanders use the front-face slug only.
+    if " // " in slug:
+        slug = slug.split(" // ", 1)[0]
     slug = re.sub(r"[',.]", "", slug)  # strip apostrophes, commas, periods
     slug = re.sub(r"[^a-z0-9]+", "-", slug)  # non-alphanumeric -> hyphen
     slug = slug.strip("-")
@@ -228,6 +273,14 @@ def _is_stale(fetched_at: str, ttl_days: int) -> bool:
     return fetched < cutoff
 
 
+def _predates_lift(data: dict[str, Any]) -> bool:
+    """True if the payload has card recommendations but no EDHREC lift scores."""
+    for cl in data.get("container", {}).get("json_dict", {}).get("cardlists", []):
+        for cv in cl.get("cardviews", []):
+            return "lift" not in cv
+    return False
+
+
 def _get_cached(conn: sqlite3.Connection, slug: str) -> tuple[dict[str, Any], str] | None:
     """Return (parsed_json, fetched_at) from cache, or None if not cached."""
     row = conn.execute(
@@ -242,7 +295,7 @@ def _get_cached(conn: sqlite3.Connection, slug: str) -> tuple[dict[str, Any], st
 def _upsert_commander(conn: sqlite3.Connection, slug: str, data: dict[str, Any]) -> None:
     """Insert or update a commander's EDHREC data in the cache."""
     name = data.get("header", slug).replace(" (Commander)", "").strip()
-    num_decks = data.get("num_decks_avg", 0)
+    num_decks_sampled = num_decks(data)
     full_json = json.dumps(data)
 
     conn.execute(
@@ -255,7 +308,7 @@ def _upsert_commander(conn: sqlite3.Connection, slug: str, data: dict[str, Any])
             full_json  = excluded.full_json,
             fetched_at = datetime('now')
         """,
-        (slug, name, num_decks, full_json),
+        (slug, name, num_decks_sampled, full_json),
     )
     conn.commit()
 
@@ -291,10 +344,13 @@ def fetch_commander(
         cached = _get_cached(conn, slug)
         if cached is not None:
             data, fetched_at = cached
-            if not _is_stale(fetched_at, ttl_days):
+            pre_lift = _predates_lift(data)
+            effective_ttl = min(ttl_days, PRE_LIFT_TTL_DAYS) if pre_lift else ttl_days
+            if not _is_stale(fetched_at, effective_ttl):
                 return data
+            reason = "predates EDHREC lift scores" if pre_lift else "stale"
             print(
-                f"  [edhrec] cache stale for {slug!r}, re-fetching...",
+                f"  [edhrec] cache {reason} for {slug!r}, re-fetching...",
                 file=sys.stderr,
             )
 
@@ -380,31 +436,38 @@ def mana_curve(data: dict[str, Any]) -> dict[int, int]:
     return {int(k): v for k, v in raw.items()}
 
 
+def _card_from_view(cv: dict[str, Any], tag: str) -> SynergyCard:
+    """Build a SynergyCard from one EDHREC ``cardviews`` entry."""
+    lift = cv.get("lift")
+    return SynergyCard(
+        name=cv["name"],
+        synergy=cv.get("synergy", 0.0),
+        inclusion=cv.get("num_decks", cv.get("inclusion", 0)),
+        potential_decks=cv.get("potential_decks", 0),
+        category=tag,
+        lift=float(lift) if lift is not None else None,
+    )
+
+
 def _extract_cardlist(data: dict[str, Any], tag: str) -> list[SynergyCard]:
     """Extract a card list by its tag from the EDHREC JSON structure."""
     cardlists = data.get("container", {}).get("json_dict", {}).get("cardlists", [])
     for cl in cardlists:
         if cl.get("tag") == tag:
-            return [
-                SynergyCard(
-                    name=cv["name"],
-                    synergy=cv.get("synergy", 0.0),
-                    inclusion=cv.get("num_decks", cv.get("inclusion", 0)),
-                    potential_decks=cv.get("potential_decks", 0),
-                    category=tag,
-                )
-                for cv in cl.get("cardviews", [])
-            ]
+            return [_card_from_view(cv, tag) for cv in cl.get("cardviews", [])]
     return []
 
 
-def high_synergy_cards(data: dict[str, Any]) -> list[SynergyCard]:
-    """Cards with the highest synergy for this commander."""
-    return _extract_cardlist(data, "highsynergycards")
+def high_lift_cards(data: dict[str, Any]) -> list[SynergyCard]:
+    """Cards with the highest lift for this commander.
+
+    Falls back to the legacy ``highsynergycards`` list for pre-lift cache entries.
+    """
+    return _extract_cardlist(data, "highliftcards") or _extract_cardlist(data, "highsynergycards")
 
 
 def top_cards(data: dict[str, Any]) -> list[SynergyCard]:
-    """Most-included cards overall (beyond just high synergy)."""
+    """Most-included cards overall (beyond just high lift)."""
     return _extract_cardlist(data, "topcards")
 
 
@@ -439,38 +502,29 @@ def cards_by_category(
         tag = cl.get("tag", "")
         if category is not None and tag != category:
             continue
-        cards = [
-            SynergyCard(
-                name=cv["name"],
-                synergy=cv.get("synergy", 0.0),
-                inclusion=cv.get("num_decks", cv.get("inclusion", 0)),
-                potential_decks=cv.get("potential_decks", 0),
-                category=tag,
-            )
-            for cv in cl.get("cardviews", [])
-        ]
-        result[tag] = cards
+        result[tag] = [_card_from_view(cv, tag) for cv in cl.get("cardviews", [])]
     return result
 
 
 def all_recommended_cards(data: dict[str, Any]) -> list[SynergyCard]:
     """Return every recommended card across all categories.
 
-    Deduplicates by name, keeping the entry with the highest synergy score.
+    Deduplicates by name, keeping the highest-scoring entry, and sorts by
+    lift descending (legacy synergy for pre-lift cache entries).
     """
     seen: dict[str, SynergyCard] = {}
     for cards in cards_by_category(data).values():
         for card in cards:
             existing = seen.get(card.name)
-            if existing is None or card.synergy > existing.synergy:
+            if existing is None or card.rank_key > existing.rank_key:
                 seen[card.name] = card
-    # Also include the meta-lists (high synergy, top cards, etc.)
-    for getter in (high_synergy_cards, top_cards, game_changers, new_cards):
+    # Also include the meta-lists (high lift, top cards, etc.)
+    for getter in (high_lift_cards, top_cards, game_changers, new_cards):
         for card in getter(data):
             existing = seen.get(card.name)
-            if existing is None or card.synergy > existing.synergy:
+            if existing is None or card.rank_key > existing.rank_key:
                 seen[card.name] = card
-    return sorted(seen.values(), key=lambda c: c.synergy, reverse=True)
+    return sorted(seen.values(), key=lambda c: c.rank_key, reverse=True)
 
 
 def combos(data: dict[str, Any]) -> list[Combo]:
@@ -533,8 +587,15 @@ def average_deck_price(data: dict[str, Any]) -> float:
 
 
 def num_decks(data: dict[str, Any]) -> int:
-    """Return the total number of decks sampled for this commander."""
-    return int(data.get("num_decks_avg", 0))
+    """Return the total number of decks sampled for this commander.
+
+    Lift-era payloads dropped ``num_decks_avg``; the commander's own
+    ``container.json_dict.card.num_decks`` carries the same count.
+    """
+    if "num_decks_avg" in data:
+        return int(data["num_decks_avg"])
+    card = data.get("container", {}).get("json_dict", {}).get("card", {})
+    return int(card.get("num_decks", 0))
 
 
 def commander_display_name(data: dict[str, Any], fallback: str = "") -> str:

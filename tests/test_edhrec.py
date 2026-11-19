@@ -1,8 +1,11 @@
 """Tests for manascope.edhrec — data models, slugification, and extraction helpers."""
 
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import pytest_mock
+import requests
 
 from manascope.edhrec import (
     Combo,
@@ -11,13 +14,16 @@ from manascope.edhrec import (
     TypeDistribution,
     _extract_cardlist,
     _is_stale,
+    _predates_lift,
+    _upsert_commander,
     all_recommended_cards,
     average_deck_price,
     cards_by_category,
     combos,
     combos_url,
+    fetch_commander,
     game_changers,
-    high_synergy_cards,
+    high_lift_cards,
     mana_curve,
     new_cards,
     num_decks,
@@ -217,6 +223,76 @@ def edhrec_data() -> dict:
     }
 
 
+@pytest.fixture()
+def edhrec_lift_data() -> dict:
+    """Current EDHREC payload shape: ``highliftcards`` tag and per-card ``lift``."""
+    return {
+        "header": "Zurgo, Thunder's Decree (Commander)",
+        "container": {
+            "json_dict": {
+                "card": {"name": "Zurgo, Thunder's Decree", "num_decks": 7337},
+                "cardlists": [
+                    {
+                        "tag": "highliftcards",
+                        "cardviews": [
+                            {
+                                "name": "Kargan Warleader",
+                                "synergy": 0.39,
+                                "lift": 41.52,
+                                "num_decks": 2907,
+                                "potential_decks": 7337,
+                            },
+                            {
+                                "name": "Lovisa Coldeyes",
+                                "synergy": 0.10,
+                                "lift": 36.25,
+                                "num_decks": 745,
+                                "potential_decks": 7337,
+                            },
+                        ],
+                    },
+                    {
+                        "tag": "topcards",
+                        "cardviews": [
+                            {
+                                "name": "Sol Ring",
+                                "synergy": 0.01,
+                                "lift": 1.02,
+                                "num_decks": 7200,
+                                "potential_decks": 7337,
+                            },
+                        ],
+                    },
+                    {
+                        "tag": "gamechangers",
+                        "cardviews": [
+                            {
+                                "name": "Vampiric Tutor",
+                                "synergy": -0.09,
+                                "lift": 0.38,
+                                "num_decks": 384,
+                                "potential_decks": 7337,
+                            },
+                        ],
+                    },
+                    {
+                        "tag": "creatures",
+                        "cardviews": [
+                            {
+                                "name": "Kargan Warleader",
+                                "synergy": 0.39,
+                                "lift": 41.52,
+                                "num_decks": 2907,
+                                "potential_decks": 7337,
+                            },
+                        ],
+                    },
+                ],
+            }
+        },
+    }
+
+
 # ── TypeDistribution ────────────────────────────────────────────────────
 
 
@@ -358,6 +434,10 @@ class TestSlugify:
     def test_numbers_preserved(self) -> None:
         assert slugify("Urza's Saga 2") == "urzas-saga-2"
 
+    def test_double_faced_uses_front_face(self) -> None:
+        name = "Esika, God of the Tree // The Prismatic Bridge"
+        assert slugify(name) == "esika-god-of-the-tree"
+
 
 # ── type_distribution ────────────────────────────────────────────────────
 
@@ -459,14 +539,20 @@ class TestExtractCardlist:
         assert cards[0].inclusion == 0
 
 
-# ── high_synergy_cards / top_cards / game_changers / new_cards ────────────
+# ── high_lift_cards / top_cards / game_changers / new_cards ────────────
 
 
 class TestCardListGetters:
-    def test_high_synergy_cards(self, edhrec_data: dict) -> None:
-        cards = high_synergy_cards(edhrec_data)
+    def test_high_lift_cards(self, edhrec_lift_data: dict) -> None:
+        cards = high_lift_cards(edhrec_lift_data)
+        assert [c.name for c in cards] == ["Kargan Warleader", "Lovisa Coldeyes"]
+        assert cards[0].category == "highliftcards"
+
+    def test_high_lift_cards_falls_back_to_legacy_tag(self, edhrec_data: dict) -> None:
+        cards = high_lift_cards(edhrec_data)
         assert len(cards) == 2
         assert cards[0].name == "Aurelia, the Warleader"
+        assert cards[0].category == "highsynergycards"
 
     def test_top_cards(self, edhrec_data: dict) -> None:
         cards = top_cards(edhrec_data)
@@ -484,7 +570,7 @@ class TestCardListGetters:
         assert cards[0].name == "Some New Angel"
 
     def test_empty_data(self) -> None:
-        assert high_synergy_cards({}) == []
+        assert high_lift_cards({}) == []
         assert top_cards({}) == []
         assert game_changers({}) == []
         assert new_cards({}) == []
@@ -553,6 +639,50 @@ class TestAllRecommendedCards:
         assert "Rune-Scarred Demon" in names
         # From lands category
         assert "Command Tower" in names
+
+
+# ── lift ────────────────────────────────────────────────────────────────────
+
+
+class TestLift:
+    def test_extract_reads_lift(self, edhrec_lift_data: dict) -> None:
+        cards = _extract_cardlist(edhrec_lift_data, "highliftcards")
+        assert cards[0].lift == 41.52
+
+    def test_legacy_payload_has_no_lift(self, edhrec_data: dict) -> None:
+        assert all(c.lift is None for c in all_recommended_cards(edhrec_data))
+
+    def test_sorted_by_lift_not_synergy(self, edhrec_lift_data: dict) -> None:
+        cards = all_recommended_cards(edhrec_lift_data)
+        assert [c.name for c in cards] == [
+            "Kargan Warleader",
+            "Lovisa Coldeyes",
+            "Sol Ring",
+            "Vampiric Tutor",
+        ]
+
+    def test_lift_outranks_legacy_synergy(self) -> None:
+        legacy = SynergyCard("Old", synergy=0.9, inclusion=1, potential_decks=1, category="x")
+        lifted = SynergyCard("New", 0.0, 1, 1, "x", lift=0.5)
+        assert lifted.rank_key > legacy.rank_key
+
+    def test_score_label_and_fields_with_lift(self) -> None:
+        card = SynergyCard("A", 0.1, 745, 7337, "highliftcards", lift=3.2635)
+        assert card.score_label == "3.26x"
+        assert card.score_fields == {"lift": 3.26}
+
+    def test_score_label_and_fields_legacy(self, sample_synergy_card: SynergyCard) -> None:
+        assert sample_synergy_card.score_label == "61.0%"
+        assert sample_synergy_card.score_fields == {"lift": None, "synergy": 61.0}
+
+    def test_predates_lift(self, edhrec_data: dict, edhrec_lift_data: dict) -> None:
+        assert _predates_lift(edhrec_data) is True
+        assert _predates_lift(edhrec_lift_data) is False
+        assert _predates_lift({}) is False
+
+    def test_num_decks_from_commander_card(self, edhrec_lift_data: dict) -> None:
+        # Lift-era payloads have no num_decks_avg.
+        assert num_decks(edhrec_lift_data) == 7337
 
 
 # ── combos ───────────────────────────────────────────────────────────────
@@ -739,6 +869,55 @@ class TestIsStale:
     def test_large_ttl_not_stale(self) -> None:
         old = (datetime.now(UTC) - timedelta(days=300)).isoformat()
         assert _is_stale(old, ttl_days=365) is False
+
+
+# ── fetch_commander cache refresh ────────────────────────────────────────────
+
+
+class TestFetchCommanderPreLift:
+    @staticmethod
+    def _cache_with(tmp_path, data: dict, age: timedelta) -> sqlite3.Connection:
+        conn = open_cache(tmp_path / "cache.db")
+        _upsert_commander(conn, "test-commander", data)
+        fetched_at = (datetime.now(UTC) - age).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("UPDATE edhrec_commanders SET fetched_at = ?", (fetched_at,))
+        conn.commit()
+        return conn
+
+    @staticmethod
+    def _offline_session(mocker: pytest_mock.MockerFixture):
+        session = mocker.Mock()
+        session.get.side_effect = requests.ConnectionError("offline")
+        mocker.patch("manascope.edhrec._make_session", return_value=session)
+        return session
+
+    def test_pre_lift_entry_is_refetched_after_a_day(
+        self, tmp_path, mocker: pytest_mock.MockerFixture, edhrec_data: dict
+    ) -> None:
+        conn = self._cache_with(tmp_path, edhrec_data, timedelta(days=2))
+        session = self._offline_session(mocker)
+        # Network failure falls back to the cached (pre-lift) payload.
+        assert fetch_commander(conn, "test-commander") == edhrec_data
+        session.get.assert_called_once()
+        conn.close()
+
+    def test_recent_pre_lift_entry_is_not_refetched(
+        self, tmp_path, mocker: pytest_mock.MockerFixture, edhrec_data: dict
+    ) -> None:
+        conn = self._cache_with(tmp_path, edhrec_data, timedelta(hours=1))
+        session = self._offline_session(mocker)
+        assert fetch_commander(conn, "test-commander") == edhrec_data
+        session.get.assert_not_called()
+        conn.close()
+
+    def test_lift_entry_uses_normal_ttl(
+        self, tmp_path, mocker: pytest_mock.MockerFixture, edhrec_lift_data: dict
+    ) -> None:
+        conn = self._cache_with(tmp_path, edhrec_lift_data, timedelta(days=2))
+        session = self._offline_session(mocker)
+        assert fetch_commander(conn, "test-commander") == edhrec_lift_data
+        session.get.assert_not_called()
+        conn.close()
 
 
 # ── open_cache ───────────────────────────────────────────────────────────

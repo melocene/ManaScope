@@ -119,14 +119,14 @@ def _section_header(title: str, count: int, note: str = "") -> None:
 
 
 def _col_header() -> None:
-    print(f"  {'Card':<35}  {'Type':<14}  {'CMC':>3}  {'Syn':>4}  {'Inc%':>5}  {'Status'}")
+    print(f"  {'Card':<35}  {'Type':<14}  {'CMC':>3}  {'Lift':>6}  {'Inc%':>5}  {'Status'}")
     print("  " + _sep("-", W - 2))
 
 
 def _card_row(card: ec.SynergyCard, type_abbr: str = "", cmc: str = "", status: str = "") -> None:
     name = card.name[:35]
     print(
-        f"  {name:<35}  {type_abbr:<14}  {cmc:>3}  {card.synergy_pct:>3}%  {card.inclusion_pct:>4.0f}%  {status}"
+        f"  {name:<35}  {type_abbr:<14}  {cmc:>3}  {card.score_label:>6}  {card.inclusion_pct:>4.0f}%  {status}"
     )
 
 
@@ -242,7 +242,7 @@ def run_edhrec_section(
     evaluated = all_recs[:top_n]
 
     if verbose:
-        print(f"  {num_decks:,} Commander decks sampled  ·  evaluating top {top_n} by synergy")
+        print(f"  {num_decks:,} Commander decks sampled  ·  evaluating top {top_n} by lift")
         print(f"  Format legality check: {fmt}")
         if owned:
             print(f"  Collection loaded: {len(owned):,} unique cards")
@@ -286,7 +286,7 @@ def run_edhrec_section(
             "in_deck": [
                 {
                     "name": c.name,
-                    "synergy": c.synergy_pct,
+                    **c.score_fields,
                     "type": _type_abbr(card_data.get(c.name)),
                     "cmc": (card_data.get(c.name) or {}).get("cmc", 0),
                 }
@@ -295,7 +295,7 @@ def run_edhrec_section(
             "gaps_owned": [
                 {
                     "name": c.name,
-                    "synergy": c.synergy_pct,
+                    **c.score_fields,
                     "type": _type_abbr(card_data.get(c.name)),
                     "cmc": (card_data.get(c.name) or {}).get("cmc", 0),
                 }
@@ -304,7 +304,7 @@ def run_edhrec_section(
             "gaps_not_owned": [
                 {
                     "name": c.name,
-                    "synergy": c.synergy_pct,
+                    **c.score_fields,
                     "type": _type_abbr(card_data.get(c.name)),
                     "cmc": (card_data.get(c.name) or {}).get("cmc", 0),
                 }
@@ -321,9 +321,9 @@ def run_edhrec_section(
             f"[EDHREC Stats] Sample:{num_decks}, InDeck:{len(in_deck)}, "
             f"GapsOwned:{len(gap_owned)}, GapsNotOwned:{len(gap_unowned)}"
         )
-        go_str = [f"{c.name}({c.synergy_pct}%)" for c in gap_owned]
+        go_str = [f"{c.name}({c.score_label})" for c in gap_owned]
         print(f"[Gaps Owned] {', '.join(go_str)}")
-        gu_str = [f"{c.name}({c.synergy_pct}%)" for c in gap_unowned[:20]]
+        gu_str = [f"{c.name}({c.score_label})" for c in gap_unowned[:20]]
         print(f"[Gaps Not Owned (Top 20)] {', '.join(gu_str)}")
         if not_cached:
             print(f"[Skipped] {len(not_cached)} not cached.")
@@ -340,15 +340,15 @@ def run_edhrec_section(
             c, _type_abbr(card_data.get(c.name)), _cmc_str(card_data.get(c.name)), "* in deck"
         )
 
-    # --- Lowest synergy (potential cut candidates) ---
+    # --- Lowest lift (potential cut candidates) ---
     if len(in_deck) >= 5 and not compact:
         bottom = in_deck[-5:]  # already sorted descending, so last 5 are lowest
         print()
-        print("  ┌─ Lowest synergy in your deck (potential cut candidates):")
+        print("  ┌─ Lowest lift in your deck (potential cut candidates):")
         for c in reversed(bottom):  # show ascending (worst first)
             ta = _type_abbr(card_data.get(c.name))
             cm = _cmc_str(card_data.get(c.name))
-            print(f"  │  {c.name:<35}  {ta:<14}  {cm:>3}  {c.synergy_pct:>3}%")
+            print(f"  │  {c.name:<35}  {ta:<14}  {cm:>3}  {c.score_label:>6}")
         print("  └─")
 
     # --- 2: Owned gaps - primary target ---
