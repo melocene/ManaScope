@@ -268,19 +268,9 @@ def iter_all_cards(conn: sqlite3.Connection) -> Iterator[dict]:
     """Yield every card in the cache as a full Scryfall card dict.
 
     Streams rows so memory usage stays bounded regardless of cache size.
-    Prefer this over :func:`get_all_cards` for new code.
     """
     for row in conn.execute("SELECT full_json FROM cards"):
         yield json.loads(row[0])
-
-
-def get_all_cards(conn: sqlite3.Connection) -> list[dict]:
-    """Return every card in the cache as a list of full Scryfall card dicts.
-
-    Materialises the whole cache in memory. For large caches, use
-    :func:`iter_all_cards` instead.
-    """
-    return list(iter_all_cards(conn))
 
 
 # Public fetch API  (cache-first; network only for misses)

@@ -384,8 +384,11 @@ CYCLING_RE = re.compile(r"\bCycling\b", re.IGNORECASE)
 ROCK_TAP_RE = re.compile(r"\{T\}\s*:\s*Add\b", re.IGNORECASE)
 
 # Decklist line regex with named groups (qty, name, set, number)
+# Optional trailing finish markers (Moxfield "*F*", "*E*") are ignored but kept
+# for verify --fix.
 LINE_RE = re.compile(
-    r"^(?P<qty>\d+)\s+(?P<name>.+?)\s+\((?P<set>[^)]+)\)\s+(?P<number>\S+)$",
+    r"^(?P<qty>\d+)\s+(?P<name>.+?)\s+\((?P<set>[^)]+)\)\s+(?P<number>\S+)"
+    r"(?P<markers>(?:\s+\*[A-Za-z]+\*)*)$",
     re.IGNORECASE,
 )
 

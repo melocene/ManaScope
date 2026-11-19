@@ -24,7 +24,7 @@ Please open all pull requests against the `dev` branch, not `main`. The `main` b
 
 ### Tests
 
-The full test suite runs on every push via CI. Running it locally before you push is a good way to catch failures early. If you add new functions or methods, writing tests for them is encouraged. If you change existing behaviour, updating the relevant tests helps. Tests and source files should stay in logical units where reasonable. For example, `tests/test_deck.py` covers `deck.py`. If any of this is skipped, we may follow up during review.
+The full test suite runs on every pull request via CI. Running it locally before you push is a good way to catch failures early. If you add new functions or methods, writing tests for them is encouraged. If you change existing behaviour, updating the relevant tests helps. Tests and source files should stay in logical units where reasonable. For example, `tests/test_deck.py` covers `deck.py`. If any of this is skipped, we may follow up during review.
 
 ### Changelog
 
@@ -45,6 +45,8 @@ To auto-fix formatting:
 uv run ruff format src/ tests/
 ```
 
+Or run the full lint, type-check, and test suite with `just check` (uses a project-local uv cache).
+
 ## Copyright and Card Data
 
 Please do not include any copyrighted material in your contributions. This means no card frames, card artwork, set symbols, or other proprietary Wizards of the Coast or third-party imagery.
@@ -61,7 +63,7 @@ The existing network code already implements these good-citizen measures:
 - Both services use a consistent 300 ms delay between requests.
 - Scryfall card data is cached permanently (no TTL); a card is only fetched once unless the cache is cleared.
 - Scryfall requests are batched (up to 75 cards per call) to minimise round-trips.
-- EDHREC commander pages are cached with a 14-day TTL, so each page is fetched at most once every two weeks.
+- EDHREC commander pages are cached with a 14-day TTL, so each page is fetched at most once every two weeks. The one exception is a cached page that predates EDHREC's lift scores: it is re-fetched at most once per day until a lift-era copy is cached.
 
 If your contribution touches the network-call code in `scryfall.py` or `edhrec.py`, please preserve or improve these measures. Do not bypass the caching layer, remove the delays, or change the `User-Agent` to something inaccurate or blank. Changes that increase request frequency or remove rate-limiting will be asked to be revised during review.
 

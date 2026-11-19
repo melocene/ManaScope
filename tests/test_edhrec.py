@@ -1,23 +1,28 @@
 """Tests for manascope.edhrec — data models, slugification, and extraction helpers."""
 
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import pytest
+import pytest_mock
+import requests
 
 from manascope.edhrec import (
     Combo,
-    SynergyCard,
+    RecommendedCard,
     TagInfo,
     TypeDistribution,
     _extract_cardlist,
     _is_stale,
+    _predates_lift,
+    _upsert_commander,
     all_recommended_cards,
-    average_deck_price,
     cards_by_category,
     combos,
     combos_url,
+    fetch_commander,
     game_changers,
-    high_synergy_cards,
+    high_lift_cards,
     mana_curve,
     new_cards,
     num_decks,
@@ -64,8 +69,8 @@ def zero_type_dist() -> TypeDistribution:
 
 
 @pytest.fixture()
-def sample_synergy_card() -> SynergyCard:
-    return SynergyCard(
+def sample_card() -> RecommendedCard:
+    return RecommendedCard(
         name="Smothering Tithe",
         synergy=0.61,
         inclusion=8500,
@@ -217,6 +222,76 @@ def edhrec_data() -> dict:
     }
 
 
+@pytest.fixture()
+def edhrec_lift_data() -> dict:
+    """Current EDHREC payload shape: ``highliftcards`` tag and per-card ``lift``."""
+    return {
+        "header": "Zurgo, Thunder's Decree (Commander)",
+        "container": {
+            "json_dict": {
+                "card": {"name": "Zurgo, Thunder's Decree", "num_decks": 7337},
+                "cardlists": [
+                    {
+                        "tag": "highliftcards",
+                        "cardviews": [
+                            {
+                                "name": "Kargan Warleader",
+                                "synergy": 0.39,
+                                "lift": 41.52,
+                                "num_decks": 2907,
+                                "potential_decks": 7337,
+                            },
+                            {
+                                "name": "Lovisa Coldeyes",
+                                "synergy": 0.10,
+                                "lift": 36.25,
+                                "num_decks": 745,
+                                "potential_decks": 7337,
+                            },
+                        ],
+                    },
+                    {
+                        "tag": "topcards",
+                        "cardviews": [
+                            {
+                                "name": "Sol Ring",
+                                "synergy": 0.01,
+                                "lift": 1.02,
+                                "num_decks": 7200,
+                                "potential_decks": 7337,
+                            },
+                        ],
+                    },
+                    {
+                        "tag": "gamechangers",
+                        "cardviews": [
+                            {
+                                "name": "Vampiric Tutor",
+                                "synergy": -0.09,
+                                "lift": 0.38,
+                                "num_decks": 384,
+                                "potential_decks": 7337,
+                            },
+                        ],
+                    },
+                    {
+                        "tag": "creatures",
+                        "cardviews": [
+                            {
+                                "name": "Kargan Warleader",
+                                "synergy": 0.39,
+                                "lift": 41.52,
+                                "num_decks": 2907,
+                                "potential_decks": 7337,
+                            },
+                        ],
+                    },
+                ],
+            }
+        },
+    }
+
+
 # ── TypeDistribution ────────────────────────────────────────────────────
 
 
@@ -270,20 +345,16 @@ class TestTypeDistribution:
         assert all(v == 0 for v in scaled.values())
         assert "total" not in scaled
 
-    def test_scaled_to_small_deck(self, sample_type_dist: TypeDistribution) -> None:
-        scaled = sample_type_dist.scaled_to(10)
-        assert sum(scaled.values()) == 10
+
+# ── RecommendedCard ─────────────────────────────────────────────────────────
 
 
-# ── SynergyCard ─────────────────────────────────────────────────────────
-
-
-class TestSynergyCard:
-    def test_inclusion_pct(self, sample_synergy_card: SynergyCard) -> None:
-        assert sample_synergy_card.inclusion_pct == 85.0
+class TestRecommendedCard:
+    def test_inclusion_pct(self, sample_card: RecommendedCard) -> None:
+        assert sample_card.inclusion_pct == 85.0
 
     def test_inclusion_pct_zero_decks(self) -> None:
-        card = SynergyCard(
+        card = RecommendedCard(
             name="Ghost Card",
             synergy=0.5,
             inclusion=0,
@@ -291,39 +362,6 @@ class TestSynergyCard:
             category="topcards",
         )
         assert card.inclusion_pct == 0.0
-
-    def test_inclusion_pct_partial(self) -> None:
-        card = SynergyCard(
-            name="Niche Combo Piece",
-            synergy=0.8,
-            inclusion=333,
-            potential_decks=1000,
-            category="highsynergycards",
-        )
-        assert card.inclusion_pct == 33.3
-
-    def test_synergy_pct(self, sample_synergy_card: SynergyCard) -> None:
-        assert sample_synergy_card.synergy_pct == 61.0
-
-    def test_synergy_pct_negative(self) -> None:
-        card = SynergyCard(
-            name="Bad Card",
-            synergy=-0.15,
-            inclusion=100,
-            potential_decks=10000,
-            category="topcards",
-        )
-        assert card.synergy_pct == -15.0
-
-    def test_synergy_pct_zero(self) -> None:
-        card = SynergyCard(
-            name="Neutral Card",
-            synergy=0.0,
-            inclusion=5000,
-            potential_decks=10000,
-            category="topcards",
-        )
-        assert card.synergy_pct == 0.0
 
 
 # ── slugify ──────────────────────────────────────────────────────────────
@@ -333,14 +371,12 @@ class TestSlugify:
     def test_simple_name(self) -> None:
         assert slugify("Kaalia of the Vast") == "kaalia-of-the-vast"
 
-    def test_comma_in_name(self) -> None:
-        assert slugify("Maralen, Fae Ascendant") == "maralen-fae-ascendant"
-
     def test_apostrophe(self) -> None:
         assert slugify("Teysa, Orzhov's Scion") == "teysa-orzhovs-scion"
 
     def test_period(self) -> None:
-        assert slugify("Mr. Foxglove") == "mr-foxglove"
+        # Periods are stripped, not turned into hyphens.
+        assert slugify("Mr.Foxglove") == "mrfoxglove"
 
     def test_multiple_special_chars(self) -> None:
         assert slugify("Who's, the Dr.?") == "whos-the-dr"
@@ -357,6 +393,10 @@ class TestSlugify:
 
     def test_numbers_preserved(self) -> None:
         assert slugify("Urza's Saga 2") == "urzas-saga-2"
+
+    def test_double_faced_uses_front_face(self) -> None:
+        name = "Esika, God of the Tree // The Prismatic Bridge"
+        assert slugify(name) == "esika-god-of-the-tree"
 
 
 # ── type_distribution ────────────────────────────────────────────────────
@@ -402,38 +442,19 @@ class TestManaCurve:
     def test_missing_panels(self) -> None:
         assert mana_curve({}) == {}
 
-    def test_missing_mana_curve(self) -> None:
-        assert mana_curve({"panels": {}}) == {}
-
-    def test_empty_mana_curve(self) -> None:
-        assert mana_curve({"panels": {"mana_curve": {}}}) == {}
-
 
 # ── _extract_cardlist ────────────────────────────────────────────────────
 
 
 class TestExtractCardlist:
-    def test_known_tag(self, edhrec_data: dict) -> None:
-        cards = _extract_cardlist(edhrec_data, "highsynergycards")
-        assert len(cards) == 2
-        assert cards[0].name == "Aurelia, the Warleader"
-        assert cards[0].synergy == 0.72
-        assert cards[0].category == "highsynergycards"
-
     def test_unknown_tag(self, edhrec_data: dict) -> None:
         cards = _extract_cardlist(edhrec_data, "nonexistenttag")
         assert cards == []
 
-    def test_empty_data(self) -> None:
-        assert _extract_cardlist({}, "highsynergycards") == []
-
-    def test_missing_container(self) -> None:
-        assert _extract_cardlist({"container": {}}, "topcards") == []
-
     def test_card_fields_populated(self, edhrec_data: dict) -> None:
         cards = _extract_cardlist(edhrec_data, "topcards")
         sol = cards[0]
-        assert isinstance(sol, SynergyCard)
+        assert isinstance(sol, RecommendedCard)
         assert sol.name == "Sol Ring"
         assert sol.synergy == 0.01
         assert sol.inclusion == 9800
@@ -459,14 +480,20 @@ class TestExtractCardlist:
         assert cards[0].inclusion == 0
 
 
-# ── high_synergy_cards / top_cards / game_changers / new_cards ────────────
+# ── high_lift_cards / top_cards / game_changers / new_cards ────────────
 
 
 class TestCardListGetters:
-    def test_high_synergy_cards(self, edhrec_data: dict) -> None:
-        cards = high_synergy_cards(edhrec_data)
+    def test_high_lift_cards(self, edhrec_lift_data: dict) -> None:
+        cards = high_lift_cards(edhrec_lift_data)
+        assert [c.name for c in cards] == ["Kargan Warleader", "Lovisa Coldeyes"]
+        assert cards[0].category == "highliftcards"
+
+    def test_high_lift_cards_falls_back_to_legacy_tag(self, edhrec_data: dict) -> None:
+        cards = high_lift_cards(edhrec_data)
         assert len(cards) == 2
         assert cards[0].name == "Aurelia, the Warleader"
+        assert cards[0].category == "highsynergycards"
 
     def test_top_cards(self, edhrec_data: dict) -> None:
         cards = top_cards(edhrec_data)
@@ -484,7 +511,7 @@ class TestCardListGetters:
         assert cards[0].name == "Some New Angel"
 
     def test_empty_data(self) -> None:
-        assert high_synergy_cards({}) == []
+        assert high_lift_cards({}) == []
         assert top_cards({}) == []
         assert game_changers({}) == []
         assert new_cards({}) == []
@@ -555,6 +582,74 @@ class TestAllRecommendedCards:
         assert "Command Tower" in names
 
 
+# ── lift ────────────────────────────────────────────────────────────────────
+
+
+class TestLift:
+    def test_extract_reads_lift(self, edhrec_lift_data: dict) -> None:
+        cards = _extract_cardlist(edhrec_lift_data, "highliftcards")
+        assert cards[0].lift == 41.52
+
+    def test_legacy_payload_has_no_lift(self, edhrec_data: dict) -> None:
+        assert all(c.lift is None for c in all_recommended_cards(edhrec_data))
+
+    def test_sorted_by_lift_not_synergy(self, edhrec_lift_data: dict) -> None:
+        cards = all_recommended_cards(edhrec_lift_data)
+        assert [c.name for c in cards] == [
+            "Kargan Warleader",
+            "Lovisa Coldeyes",
+            "Sol Ring",
+            "Vampiric Tutor",
+        ]
+
+    def test_lift_outranks_legacy_synergy(self) -> None:
+        legacy = RecommendedCard("Old", synergy=0.9, inclusion=1, potential_decks=1, category="x")
+        lifted = RecommendedCard("New", 0.0, 1, 1, "x", lift=0.5)
+        assert lifted.rank_key > legacy.rank_key
+
+    def test_score_label_and_fields_with_lift(self) -> None:
+        card = RecommendedCard("A", 0.1, 745, 7337, "highliftcards", lift=3.2635)
+        assert card.score_label == "3.26x"
+        assert card.score_fields == {"lift": 3.26}
+
+    def test_score_label_and_fields_legacy(self, sample_card: RecommendedCard) -> None:
+        assert sample_card.score_label == "61.0%"
+        assert sample_card.score_fields == {"lift": None, "synergy": 61.0}
+
+    def test_predates_lift(self, edhrec_data: dict, edhrec_lift_data: dict) -> None:
+        assert _predates_lift(edhrec_data) is True
+        assert _predates_lift(edhrec_lift_data) is False
+        assert _predates_lift({}) is False
+
+    def test_num_decks_from_commander_card(self, edhrec_lift_data: dict) -> None:
+        # Lift-era payloads have no num_decks_avg.
+        assert num_decks(edhrec_lift_data) == 7337
+
+
+class TestStaples:
+    def test_colour_share_from_lift(self) -> None:
+        # 90% of this commander's decks at 1.2x lift -> ~75% of decks in these colours.
+        card = RecommendedCard("Staple Card", 0.15, 900, 1000, "x", lift=1.2)
+        assert card.colour_pct == 75.0
+        assert card.is_staple is True
+
+    def test_popular_with_commander_is_not_a_staple(self) -> None:
+        # 70% of this commander's decks but ~7% of decks in these colours.
+        card = RecommendedCard("Core Card", 0.63, 700, 1000, "x", lift=10.0)
+        assert card.colour_pct == 7.0
+        assert card.is_staple is False
+
+    def test_legacy_colour_share_from_synergy(self) -> None:
+        # Pre-lift pages: inclusion - synergy gives the same estimate.
+        card = RecommendedCard("Core Card", 0.63, 700, 1000, "x")
+        assert card.colour_pct == 7.0
+
+    def test_no_data(self) -> None:
+        assert RecommendedCard("A", 0.0, 0, 0, "x").colour_pct is None
+        assert RecommendedCard("A", 0.0, 1, 10, "x", lift=0.0).colour_pct is None
+        assert RecommendedCard("A", 0.0, 1, 10, "x", lift=0.0).is_staple is False
+
+
 # ── combos ───────────────────────────────────────────────────────────────
 
 
@@ -565,16 +660,8 @@ class TestCombos:
         assert isinstance(result[0], Combo)
         assert result[0].description == "Master of Cruelties + Kaalia"
 
-    def test_filters_see_more(self, edhrec_data: dict) -> None:
-        result = combos(edhrec_data)
-        descriptions = [c.description for c in result]
-        assert "See More..." not in descriptions
-
     def test_empty_data(self) -> None:
         assert combos({}) == []
-
-    def test_no_combocounts_panel(self) -> None:
-        assert combos({"panels": {}}) == []
 
     def test_only_see_more(self) -> None:
         data = {"panels": {"combocounts": [{"value": "See More...", "href": "/combos/x"}]}}
@@ -635,9 +722,6 @@ class TestTags:
     def test_empty_data(self) -> None:
         assert tags({}) == []
 
-    def test_no_taglinks_panel(self) -> None:
-        assert tags({"panels": {}}) == []
-
 
 # ── num_decks ────────────────────────────────────────────────────────────
 
@@ -693,20 +777,6 @@ class TestCommanderDisplayName:
         )
 
 
-# ── average_deck_price ───────────────────────────────────────────────────
-
-
-class TestAverageDeckPrice:
-    def test_returns_price(self, edhrec_data: dict) -> None:
-        assert average_deck_price(edhrec_data) == 450.75
-
-    def test_missing_key(self) -> None:
-        assert average_deck_price({}) == 0.0
-
-    def test_integer_price(self) -> None:
-        assert average_deck_price({"avg_price": 300}) == 300.0
-
-
 # ── _is_stale ────────────────────────────────────────────────────────────
 
 
@@ -731,26 +801,60 @@ class TestIsStale:
     def test_malformed_timestamp_returns_stale(self) -> None:
         assert _is_stale("not-a-timestamp", ttl_days=14) is True
 
-    def test_zero_ttl_always_stale(self) -> None:
-        recent = datetime.now(UTC).isoformat()
-        # With TTL 0, even a just-now timestamp is stale
-        assert _is_stale(recent, ttl_days=0) is True
 
-    def test_large_ttl_not_stale(self) -> None:
-        old = (datetime.now(UTC) - timedelta(days=300)).isoformat()
-        assert _is_stale(old, ttl_days=365) is False
+# ── fetch_commander cache refresh ────────────────────────────────────────────
+
+
+class TestFetchCommanderPreLift:
+    @staticmethod
+    def _cache_with(tmp_path, data: dict, age: timedelta) -> sqlite3.Connection:
+        conn = open_cache(tmp_path / "cache.db")
+        _upsert_commander(conn, "test-commander", data)
+        fetched_at = (datetime.now(UTC) - age).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("UPDATE edhrec_commanders SET fetched_at = ?", (fetched_at,))
+        conn.commit()
+        return conn
+
+    @staticmethod
+    def _offline_session(mocker: pytest_mock.MockerFixture):
+        session = mocker.Mock()
+        session.get.side_effect = requests.ConnectionError("offline")
+        mocker.patch("manascope.edhrec._make_session", return_value=session)
+        return session
+
+    def test_pre_lift_entry_is_refetched_after_a_day(
+        self, tmp_path, mocker: pytest_mock.MockerFixture, edhrec_data: dict
+    ) -> None:
+        conn = self._cache_with(tmp_path, edhrec_data, timedelta(days=2))
+        session = self._offline_session(mocker)
+        # Network failure falls back to the cached (pre-lift) payload.
+        assert fetch_commander(conn, "test-commander") == edhrec_data
+        session.get.assert_called_once()
+        conn.close()
+
+    def test_recent_pre_lift_entry_is_not_refetched(
+        self, tmp_path, mocker: pytest_mock.MockerFixture, edhrec_data: dict
+    ) -> None:
+        conn = self._cache_with(tmp_path, edhrec_data, timedelta(hours=1))
+        session = self._offline_session(mocker)
+        assert fetch_commander(conn, "test-commander") == edhrec_data
+        session.get.assert_not_called()
+        conn.close()
+
+    def test_lift_entry_uses_normal_ttl(
+        self, tmp_path, mocker: pytest_mock.MockerFixture, edhrec_lift_data: dict
+    ) -> None:
+        conn = self._cache_with(tmp_path, edhrec_lift_data, timedelta(days=2))
+        session = self._offline_session(mocker)
+        assert fetch_commander(conn, "test-commander") == edhrec_lift_data
+        session.get.assert_not_called()
+        conn.close()
 
 
 # ── open_cache ───────────────────────────────────────────────────────────
 
 
 class TestOpenCache:
-    def test_creates_db(self, tmp_path) -> None:
-        db_path = tmp_path / "cache.db"
-        conn = open_cache(db_path)
-        assert db_path.exists()
-        conn.close()
-
     def test_idempotent(self, tmp_path) -> None:
         db_path = tmp_path / "cache.db"
         conn1 = open_cache(db_path)

@@ -15,7 +15,7 @@ import json
 import random
 import sys
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from manascope import scryfall as sc
@@ -63,7 +63,6 @@ class AggregateStats:
     commander_name: str | None = None
     library_lands: int = 0
     library_spells: int = 0
-    notes: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

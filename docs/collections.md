@@ -2,9 +2,9 @@
 
 Use this only when manual CSV inspection is unavoidable. Prefer ManaScope commands first:
 
-- `uv run manascope collection --collection <csv> --json`
-- `uv run manascope verify --decklist <path> --collection <csv> --json`
-- `uv run manascope pipeline --decklist <path> --collection <csv>`
+- `just manascope collection --collection <csv> --json`
+- `just manascope verify --decklist <path> --collection <csv> --json`
+- `just manascope pipeline --decklist <path> --collection <csv>`
 
 ## Collection Types
 
@@ -30,5 +30,7 @@ uses to perform strict per-printing matching. `Foil` values are typically `norma
 ### Arena: MTGA
 
 MTGA export schemas can vary and may include Arena-exclusive cards. Always inspect the header row before assuming column positions.
+
+ManaScope reads only `Name` and `Count`. There are no set/collector columns, so `verify --printings` falls back to name-only matching.
 
 For Arena wildcard reasoning, use `on_arena` and `arena_rarity` from `lookup --brief --json`; do not use paper rarity.

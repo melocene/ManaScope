@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "manascope"
-version = "0.2.0"
-description = "MTG deck analysis toolkit — mana base, EDHREC review, collection verification."
+version = "0.3.0"
+description = "MTG deck analysis toolkit: mana base, EDHREC review, collection verification, deck building, opening hands."
 readme = "README.md"
 requires-python = ">=3.14"
 license = "AGPL-3.0-or-later"
@@ -15,7 +15,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Natural Language :: English",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3 :: Only",
@@ -28,7 +27,7 @@ classifiers = [
 dependencies = [
     "requests>=2.34.2",
     "rich>=15.0.0",
-    "typer>=0.26.5",
+    "typer>=0.29.2",
 ]
 
 [project.urls]
@@ -42,10 +41,10 @@ manascope = "manascope.cli:app"
 
 [dependency-groups]
 dev = [
-    "ruff>=0.15.12",
-    "ty>=0.0.35",
-    "pytest>=9.0.3",
-    "pytest-mock>=3.15.1",
+    "ruff>=0.17.5",
+    "ty>=0.0.107",
+    "pytest>=9.2.0",
+    "pytest-mock>=3.17.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -63,8 +62,8 @@ extend-select = [
     "B",   # flake8-bugbear — catches common bugs and design issues that pyflakes misses
     "SIM", # flake8-simplify — suggests simpler equivalent expressions
     "S",   # flake8-bandit — security checks (relevant since this tool makes HTTP requests)
-    "D1",  # pydocstring — flags missing docstrings on modules, classes, and functions
-    "D3",  # pydocstring — enforces triple double-quotes for all docstrings
+    "D1",  # pydocstyle — flags missing docstrings on modules, classes, and functions
+    "D3",  # pydocstyle — enforces triple double-quotes for all docstrings
     "RUF", # Ruff-native rules — curated extra checks not covered by the above rule sets
 ]
 ignore = [

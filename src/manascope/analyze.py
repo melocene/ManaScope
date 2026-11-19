@@ -1,6 +1,7 @@
 """Mana-base and deck composition analysis command module.
 
-Computes land counts, colour balance, mana curve, and synergy metrics for a
+Computes land counts, colour balance, mana curve, and commander creature-type
+matches for a
 decklist, then outputs results via the ``DeckStats`` dataclass in JSON, agent,
 or human-readable format. Card helpers live in :mod:`manascope.deck`; Scryfall
 cache access is via :mod:`manascope.scryfall`.
@@ -46,6 +47,8 @@ class DeckStats:
     # Colour info
     sorted_colours: list[str]
     colour_identity: set[str]
+    # Creature types the commander cares about ("synergy" here is unrelated to
+    # EDHREC's legacy synergy score).
     synergy_types: set[str]
     commander_cmc: float
 
@@ -71,7 +74,7 @@ class DeckStats:
     rock_total: float
     effective_land_count: float
 
-    # Synergy
+    # Creature-type matches
     synergy_targets: list[dict]
     non_synergy_creatures: list[dict]
 
@@ -336,7 +339,10 @@ def _output_json(stats: DeckStats) -> dict:
         "speed": stats.speed_counts,
         "balance": {},
         "curve": {k: v for k, v in sorted(stats.cmc_counter.items())},
-        "synergy": {"matches": len(set(c["name"] for c in stats.synergy_targets))}
+        "creature_types": {
+            "types": sorted(stats.synergy_types),
+            "matches": len({c["name"] for c in stats.synergy_targets}),
+        }
         if stats.synergy_types
         else {},
     }
@@ -380,8 +386,9 @@ def _output_agent(stats: DeckStats) -> None:
     c_str = [f"{k}:{v}" for k, v in sorted(stats.cmc_counter.items())]
     print("[Curve] " + ", ".join(c_str))
     if stats.synergy_types:
-        n_syn = len(set(c["name"] for c in stats.synergy_targets))
-        print(f"[Synergy] Matches:{n_syn}")
+        n_syn = len({c["name"] for c in stats.synergy_targets})
+        type_names = "/".join(t.title() for t in sorted(stats.synergy_types))
+        print(f"[Creature Types] {type_names}, Matches:{n_syn}")
 
 
 # ---------------------------------------------------------------------------
@@ -391,8 +398,8 @@ def _output_agent(stats: DeckStats) -> None:
 
 def _print_header(stats: DeckStats) -> None:
     """Print the banner with commander name, format, colours, and card counts."""
-    synergy_label = (
-        "/".join(t.title() for t in sorted(stats.synergy_types))
+    type_label = (
+        "/".join(t.title() for t in sorted(stats.synergy_types)) + " (commander creature types)"
         if stats.synergy_types
         else "none detected"
     )
@@ -406,7 +413,7 @@ def _print_header(stats: DeckStats) -> None:
         f"  Colours  : {' '.join(stats.sorted_colours)} "
         f"({', '.join(deck.COLOUR_LABELS.get(c, c) for c in stats.sorted_colours)})"
     )
-    print(f"  Synergy  : {synergy_label}")
+    print(f"  Types    : {type_label}")
     print("=" * 72)
     print()
     print(f"  Total cards      : {stats.card_count}")
@@ -569,10 +576,10 @@ def _print_recommendation(stats: DeckStats, *, compact: bool) -> None:
 
 
 def _print_synergy(stats: DeckStats, *, compact: bool) -> None:
-    """Print the synergy/creature section."""
+    """Print the commander creature-type section."""
     if stats.synergy_types:
         synergy_title = (
-            "COMMANDER SYNERGY CREATURES ("
+            "COMMANDER CREATURE TYPES ("
             + ", ".join(t.title() for t in sorted(stats.synergy_types))
             + ")"
         )
@@ -580,7 +587,7 @@ def _print_synergy(stats: DeckStats, *, compact: bool) -> None:
         synergy_title = "CREATURES IN DECK"
     print_separator(synergy_title)
     if not compact:
-        print(f"  {'Card':<35} {'Relevant types':<20} {'CMC':>4}  {'Synergy match'}")
+        print(f"  {'Card':<35} {'Relevant types':<20} {'CMC':>4}  {'Type match'}")
         print(f"  {'-' * 35} {'-' * 20} {'-' * 4}  {'-' * 14}")
 
         all_creatures_for_table = stats.synergy_targets + stats.non_synergy_creatures
@@ -607,9 +614,9 @@ def _print_synergy(stats: DeckStats, *, compact: bool) -> None:
 
         print()
     if stats.synergy_types:
-        n_synergy = len(set(c["name"] for c in stats.synergy_targets))
+        n_synergy = len({c["name"] for c in stats.synergy_targets})
         synergy_type_names = "/".join(t.title() for t in sorted(stats.synergy_types))
-        print(f"  Synergy matches ({synergy_type_names}): {n_synergy}")
+        print(f"  Creature-type matches ({synergy_type_names}): {n_synergy}")
     print()
 
 
@@ -689,17 +696,15 @@ def _print_assessment(stats: DeckStats) -> None:
         issues.append(f"Only {reliable_untapped} reliably untapped lands - risk of slow starts.")
 
     if stats.synergy_types:
-        n_synergy = len(set(c["name"] for c in stats.synergy_targets))
+        n_synergy = len({c["name"] for c in stats.synergy_targets})
         synergy_type_names = "/".join(t.title() for t in sorted(stats.synergy_types))
         if n_synergy >= 15:
-            positives.append(
-                f"{n_synergy} {synergy_type_names} synergy targets - plenty of threats."
-            )
+            positives.append(f"{n_synergy} {synergy_type_names} cards - plenty of threats.")
         elif n_synergy >= 10:
-            positives.append(f"{n_synergy} {synergy_type_names} synergy targets - adequate.")
+            positives.append(f"{n_synergy} {synergy_type_names} cards - adequate.")
         else:
             issues.append(
-                f"Only {n_synergy} {synergy_type_names} synergy targets - "
+                f"Only {n_synergy} {synergy_type_names} cards - "
                 f"consider adding more creatures with those types."
             )
 

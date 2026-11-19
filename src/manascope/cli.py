@@ -643,7 +643,7 @@ def _fix_decklist_printings(
 
         new_set = card.get("set", set_code).upper()
         new_cn = card.get("collector_number", cn)
-        new_line = f"{qty} {name} ({new_set}) {new_cn}"
+        new_line = f"{qty} {name} ({new_set}) {new_cn}{m.group('markers')}"
         replacements.append({"old": stripped, "new": new_line})
         new_lines.append(new_line)
 
@@ -781,14 +781,10 @@ def collection(
     import json as json_mod
 
     from manascope import scryfall as sc
-    from manascope.collection import (
-        filter_collection,
-        load_collection,
-        load_collections,
-    )
+    from manascope.collection import filter_collection, load_collections
 
     paths = [Path(p) for p in collection]
-    owned = load_collections(paths) if len(paths) > 1 else load_collection(paths[0])
+    owned = load_collections(paths)
 
     conn = sc.open_cache(cache)
     try:
@@ -975,12 +971,12 @@ def edhrec(
         int,
         typer.Option(
             "--top",
-            help="Number of recommended cards to emit in --json mode (sorted by synergy).",
+            help="Number of recommended cards to emit in --json mode (sorted by lift).",
         ),
     ] = 80,
     cache: CachePath = DB_PATH,
 ) -> None:
-    """Display EDHREC commander data (type dist, curve, synergy, combos, themes)."""
+    """Display EDHREC commander data (type dist, curve, lift, combos, themes)."""
     _print_notice(machine_readable=json_flag or quiet)
     from manascope import edhrec as ec
 
@@ -1010,15 +1006,16 @@ def edhrec(
             "num_decks": ec.num_decks(result),
             "type_distribution": td._asdict(),
             "mana_curve": ec.mana_curve(result),
-            "high_synergy_cards": [
-                {"name": c.name, "synergy": c.synergy_pct, "inclusion": c.inclusion_pct}
-                for c in ec.high_synergy_cards(result)[:15]
+            "high_lift_cards": [
+                {"name": c.name, **c.score_fields, "inclusion": c.inclusion_pct}
+                for c in ec.high_lift_cards(result)[:15]
             ],
             "recommended": [
                 {
                     "name": c.name,
-                    "synergy": c.synergy_pct,
+                    **c.score_fields,
                     "inclusion": c.inclusion_pct,
+                    **({"staple": True} if c.is_staple else {}),
                     "category": c.category,
                 }
                 for c in ec.all_recommended_cards(result)[:top]
@@ -1036,7 +1033,7 @@ def edhrec(
     pct = td.as_percentages()
     scaled_60 = td.scaled_to(60)
     mc = ec.mana_curve(result)
-    hs = ec.high_synergy_cards(result)
+    hs = ec.high_lift_cards(result)
     cb = ec.combos(result)
     tg = ec.tags(result)
 
@@ -1065,11 +1062,11 @@ def edhrec(
         bar = "#" * mc[mv]
         typer.echo(f"    {mv}mv: {bar} ({mc[mv]})")
 
-    typer.echo("\n  Top 10 High Synergy Cards:")
+    typer.echo("\n  Top 10 High Lift Cards:")
     for i, card in enumerate(hs[:10], 1):
         typer.echo(
             f"    {i:>2}. {card.name:<35} "
-            f"syn={card.synergy_pct:>5.1f}%  "
+            f"lift={card.score_label:>7}  "
             f"inc={card.inclusion_pct:>5.1f}%"
         )
 

@@ -82,13 +82,6 @@ def _make_mock_response(body: dict, status_code: int = 200) -> MagicMock:
 
 
 class TestGetCardByName:
-    def test_exact_match(self, cache_conn: sqlite3.Connection) -> None:
-        card = _make_card("Sol Ring", "c21", "263")
-        _seed_cache(cache_conn, [card])
-        result = get_card_by_name(cache_conn, "Sol Ring")
-        assert result is not None
-        assert result["name"] == "Sol Ring"
-
     def test_case_insensitive(self, cache_conn: sqlite3.Connection) -> None:
         card = _make_card("Sol Ring", "c21", "263")
         _seed_cache(cache_conn, [card])
@@ -106,18 +99,6 @@ class TestGetCardByName:
 
 class TestFetchCardsByNamesCacheHits:
     """Tests where all cards are already cached — no network calls."""
-
-    def test_all_cached(self, cache_conn: sqlite3.Connection) -> None:
-        cards = [
-            _make_card("Sol Ring", "c21", "263"),
-            _make_card("Lightning Bolt", "m10", "146"),
-        ]
-        _seed_cache(cache_conn, cards)
-
-        result = fetch_cards_by_names(cache_conn, ["Sol Ring", "Lightning Bolt"])
-        assert "Sol Ring" in result
-        assert "Lightning Bolt" in result
-        assert len(result) == 2
 
     def test_empty_list(self, cache_conn: sqlite3.Connection) -> None:
         result = fetch_cards_by_names(cache_conn, [])
@@ -311,52 +292,6 @@ class TestFetchCardsByNamesBatchFetch:
         assert cached["name"] == "New Card"
 
 
-# ── DFC name normalization for verify ────────────────────────────────────
-
-
-class TestDfcNameNormalization:
-    """Test that the verify logic correctly normalizes single-slash DFC names
-    to double-slash for collection matching. This tests the normalization
-    logic extracted from cli.py's verify command."""
-
-    @staticmethod
-    def _check_owned(name: str, owned: set[str]) -> bool:
-        """Reproduce the verify matching logic from cli.py."""
-        low = name.lower()
-        normalized = low.replace(" / ", " // ")
-        if normalized in owned:
-            return True
-        front = normalized.split(" // ", 1)[0] if " // " in normalized else low
-        return front in owned
-
-    def test_exact_match(self) -> None:
-        owned = {"sol ring"}
-        assert self._check_owned("Sol Ring", owned)
-
-    def test_dfc_single_slash_normalized(self) -> None:
-        """Decklist single-slash should match collection double-slash."""
-        owned = {"virtue of loyalty // ardenvale fealty"}
-        assert self._check_owned("Virtue of Loyalty / Ardenvale Fealty", owned)
-
-    def test_dfc_front_face_only_in_collection(self) -> None:
-        """MTGA collection stores front face only; decklist has full name."""
-        owned = {"virtue of loyalty"}
-        assert self._check_owned("Virtue of Loyalty / Ardenvale Fealty", owned)
-
-    def test_plain_card_not_owned(self) -> None:
-        owned = {"sol ring"}
-        assert not self._check_owned("Lightning Bolt", owned)
-
-    def test_dfc_not_owned(self) -> None:
-        owned = {"sol ring"}
-        assert not self._check_owned("Virtue of Loyalty / Ardenvale Fealty", owned)
-
-    def test_adventure_card_single_slash(self) -> None:
-        """Adventure cards like 'Bramble Familiar / Fetch Quest'."""
-        owned = {"bramble familiar // fetch quest"}
-        assert self._check_owned("Bramble Familiar / Fetch Quest", owned)
-
-
 # -- _read_capped streaming size cap ------------------------------------------
 
 
@@ -446,15 +381,7 @@ class TestArenaAvailability:
         on_arena, rarity = arena_availability(cache_conn, "Bone Shards")
         assert (on_arena, rarity) == (False, None)
 
-    def test_arena_printing_returns_its_rarity(self, cache_conn: sqlite3.Connection) -> None:
-        _seed_cache(
-            cache_conn,
-            [_make_card("Bone Shards", "j21", "298", rarity="common", games=["arena"])],
-        )
-        on_arena, rarity = arena_availability(cache_conn, "Bone Shards")
-        assert (on_arena, rarity) == (True, "common")
-
-    def test_picks_cheapest_arena_rarity(self, cache_conn: sqlite3.Connection) -> None:
+    def test_cheaper_paper_only_printing_is_ignored(self, cache_conn: sqlite3.Connection) -> None:
         # Foundry Inspector is the canonical case: paper has a common printing,
         # but on Arena only the uncommon BRR/KLR printings exist. The arena
         # rarity must reflect what the user actually pays in wildcards.

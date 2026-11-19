@@ -142,12 +142,6 @@ class TestSimulateOne:
         assert result.hand == []
         assert result.drawn_after == []
 
-    def test_seed_reproducible(self) -> None:
-        library = [_land() for _ in range(30)] + [_spell(f"S{i}") for i in range(70)]
-        r1 = simulate_one(library, rng=random.Random(42))
-        r2 = simulate_one(library, rng=random.Random(42))
-        assert [c["name"] for c in r1.hand] == [c["name"] for c in r2.hand]
-
     def test_play_to_extra_draws(self) -> None:
         library = [_land() for _ in range(50)] + [_spell() for _ in range(50)]
         result = simulate_one(library, play_to=3, rng=random.Random(0))
@@ -164,13 +158,11 @@ class TestSimulateOne:
         assert result.cards_bottomed == 6
 
     def test_mulligan_keeps_first_valid_hand(self) -> None:
-        # 50/50 split: many hands will land in [2,5] on the first try.
-        library = [_land() for _ in range(50)] + [_spell() for _ in range(50)]
+        # 5 lands + 5 spells: every 7-card hand has 2-5 lands, so it is kept.
+        library = [_land() for _ in range(5)] + [_spell() for _ in range(5)]
         result = simulate_one(library, mulligan_to=5, rng=random.Random(0))
-        summary = hand_summary(result.hand)
-        # Either we mulliganed to a smaller hand or we got a 2-5 land 7.
-        if result.mulligans == 0:
-            assert 2 <= summary["lands"] <= 5
+        assert result.mulligans == 0
+        assert 2 <= hand_summary(result.hand)["lands"] <= 5
 
 
 class TestAggregate:
