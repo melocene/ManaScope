@@ -273,12 +273,11 @@ def filter_collection(
     type_needle = type_substr.lower() if type_substr else None
     rarity_needle = rarity.lower() if rarity else None
 
-    results: list[dict] = []
+    results: dict[str, dict] = {}
     seen_ids: set[int] = set()
     for entry in owned.values():
-        # ``owned`` indexes DFCs under both "Front // Back" and "Front";
-        # both keys point at the same dict object, so id-dedup avoids
-        # double-counting without name-string parsing.
+        # ``owned`` indexes DFCs under both "Front // Back" and "Front". Skip
+        # shared entry objects cheaply; separate ones are merged by card name below.
         if id(entry) in seen_ids:
             continue
         seen_ids.add(id(entry))
@@ -288,6 +287,10 @@ def filter_collection(
         except json.JSONDecodeError, TypeError:
             continue
         if card is None:
+            continue
+        canonical = card.get("name", name)
+        if canonical in results:
+            results[canonical]["count"] = max(results[canonical]["count"], entry.get("count", 1))
             continue
 
         card_ci = set(card.get("color_identity", []))
@@ -306,16 +309,14 @@ def filter_collection(
         if legal_in and not is_legal(card, legal_in):
             continue
 
-        results.append(
-            {
-                "name": card.get("name", name),
-                "count": entry.get("count", 1),
-                "rarity": card.get("rarity", "unknown"),
-                "cmc": card.get("cmc", 0),
-                "type_line": card.get("type_line", ""),
-                "color_identity": sorted(card_ci),
-                "set": card.get("set", ""),
-            }
-        )
+        results[canonical] = {
+            "name": canonical,
+            "count": entry.get("count", 1),
+            "rarity": card.get("rarity", "unknown"),
+            "cmc": card.get("cmc", 0),
+            "type_line": card.get("type_line", ""),
+            "color_identity": sorted(card_ci),
+            "set": card.get("set", ""),
+        }
 
-    return sorted(results, key=lambda r: r["name"])
+    return sorted(results.values(), key=lambda r: r["name"])

@@ -29,7 +29,7 @@ from typing import Any
 from manascope import DB_PATH
 from manascope import edhrec as ec
 from manascope import scryfall as sc
-from manascope.collection import BASIC_LANDS, load_collection, load_collections
+from manascope.collection import BASIC_LANDS, load_collections
 from manascope.deck import (
     FORMAT_DECK_SIZE as _DECK_SIZE,
 )
@@ -129,10 +129,6 @@ def _basic_distribution(
 def _is_basic_land(card: dict) -> bool:
     """True for basic lands (which a build never adds via EDHREC slots)."""
     return card.get("name", "").lower() in BASIC_LANDS
-
-
-def _is_land(card: dict) -> bool:
-    return "land" in card.get("type_line", "").lower()
 
 
 def select_spells(
@@ -263,11 +259,7 @@ def run(
             f"land_count {land_count} leaves no room for spells in a {deck_size}-card deck"
         )
 
-    owned = (
-        load_collections(collection_paths)
-        if len(collection_paths) > 1
-        else load_collection(collection_paths[0])
-    )
+    owned = load_collections(collection_paths)
 
     conn = sc.open_cache(cache)
     try:

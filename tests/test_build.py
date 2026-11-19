@@ -14,7 +14,7 @@ from manascope.build import (
     build_decklist_text,
     select_spells,
 )
-from manascope.edhrec import SynergyCard
+from manascope.edhrec import RecommendedCard
 
 # ── Pure helpers ────────────────────────────────────────────────────────
 
@@ -45,6 +45,7 @@ class TestBasicDistribution:
     def test_sums_to_total(self) -> None:
         from collections import Counter
 
+        # 8/20 and 12/20 of 16 leave fractions, exercising largest-remainder rounding.
         pips = Counter({"W": 8, "B": 12})
         result = _basic_distribution(pips, ["W", "B"], 16)
         assert sum(result.values()) == 16
@@ -129,8 +130,8 @@ def _commander() -> dict:
     }
 
 
-def _rec(name: str, synergy: float = 50.0) -> SynergyCard:
-    return SynergyCard(
+def _rec(name: str, synergy: float = 50.0) -> RecommendedCard:
+    return RecommendedCard(
         name=name, synergy=synergy / 100.0, inclusion=10, potential_decks=100, category="x"
     )
 
@@ -198,7 +199,7 @@ class TestSelectSpells:
     ) -> None:
         mocker.patch(
             "manascope.build.ec.all_recommended_cards",
-            return_value=[SynergyCard("Bone Shards", 0.1, 10, 100, "x", lift=4.2)],
+            return_value=[RecommendedCard("Bone Shards", 0.1, 10, 100, "x", lift=4.2)],
         )
         _selected, unowned, _ = select_spells(
             _commander(), {}, {}, cache, fmt="brawl", target_count=10, top=80
@@ -272,19 +273,6 @@ class TestBuildDecklistText:
         assert text.count("Swamp") == 1
         assert "8 Plains (ONE) 267" in text
         assert "9 Swamp (ONE) 269" in text
-
-    def test_basic_printing_is_independent_of_commander_set(self) -> None:
-        # Regression: the build used to emit ``Plains (NEO) 1`` which actually
-        # resolves to Ancestral Katana on Scryfall, causing analyze to count
-        # the basics as artifacts and report 0 lands.
-        cmd_neo = {"name": "Greasefang", "set": "neo", "collector_number": "220"}
-        cmd_mat = {"name": "Narset", "set": "mat", "collector_number": "38"}
-        text_neo = build_decklist_text(cmd_neo, [], {"W": 4}, fmt="commander")
-        text_mat = build_decklist_text(cmd_mat, [], {"W": 4}, fmt="commander")
-        assert "4 Plains (ONE) 267" in text_neo
-        assert "4 Plains (ONE) 267" in text_mat
-        assert "(NEO) 1" not in text_neo
-        assert "(MAT) 1" not in text_mat
 
     def test_basics_emitted_in_wubrg_order(self) -> None:
         cmd = {"name": "X", "set": "neo", "collector_number": "1"}

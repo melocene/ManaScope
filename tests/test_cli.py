@@ -1,9 +1,11 @@
 import json
+from collections import Counter
 from pathlib import Path
 
 import pytest_mock
 from typer.testing import CliRunner
 
+from manascope.analyze import DeckStats
 from manascope.cli import app
 
 runner = CliRunner()
@@ -39,10 +41,7 @@ def test_pipeline_command(mocker: pytest_mock.MockerFixture, tmp_path: Path) -> 
 def test_pipeline_includes_verify_when_collection_provided(
     mocker: pytest_mock.MockerFixture, tmp_path: Path
 ) -> None:
-    """Adding --collection should fold a verify_decklist call into the JSON output.
-
-    Saves agents from running pipeline + verify back-to-back.
-    """
+    """Adding --collection should fold a verify_decklist call into the JSON output."""
     mocker.patch("manascope.analyze.run", return_value={"ok": True})
     mocker.patch("manascope.review.run", return_value={"stats": {}})
     mocker.patch(
@@ -209,51 +208,50 @@ def test_pipeline_summary_includes_missing_when_collection_provided(
     assert "missing=3" in line
 
 
+def _stub_deck_stats(tmp_path: Path, **overrides: object) -> DeckStats:
+    """Minimal DeckStats for analyze output tests; override any field via kwargs."""
+    fields: dict = {
+        "commander_name": "X",
+        "decklist": str(tmp_path / "d.txt"),
+        "deck_format": "brawl",
+        "cache_path": "",
+        "card_count": 100,
+        "sorted_colours": [],
+        "colour_identity": set(),
+        "synergy_types": set(),
+        "commander_cmc": 0,
+        "lands": [],
+        "spells": [],
+        "total_lands": 34,
+        "total_spells": 64,
+        "type_distribution": Counter(),
+        "source_count": Counter(),
+        "speed_counts": Counter({"untapped": 0, "shock": 0, "conditional": 0, "tapped": 0}),
+        "pip_counts": Counter(),
+        "needs_colour": Counter(),
+        "total_pips": 0,
+        "rocks": [],
+        "mana_creatures": [],
+        "rock_total": 0.0,
+        "effective_land_count": 34.0,
+        "synergy_targets": [],
+        "non_synergy_creatures": [],
+        "cmc_counter": Counter(),
+        "balance_data": {},
+        "eff_low": 33.0,
+        "eff_high": 36.0,
+        "land_target_label": "33-35 raw",
+        "card_map_size": 0,
+    }
+    fields.update(overrides)
+    return DeckStats(**fields)
+
+
 def test_analyze_json_includes_card_count_block(
     mocker: pytest_mock.MockerFixture, tmp_path: Path
 ) -> None:
-    """analyze --json must surface total_cards / expected for the format.
-
-    Catches the silent off-by-one I shipped earlier this session (99 vs 100).
-    """
-    # Patch _compute_stats to return a stub DeckStats with known counts.
-    from collections import Counter
-
-    from manascope.analyze import DeckStats
-
-    stub = DeckStats(
-        commander_name="X",
-        decklist=str(tmp_path / "d.txt"),
-        deck_format="brawl",
-        cache_path="",
-        card_count=99,  # one short on purpose
-        sorted_colours=[],
-        colour_identity=set(),
-        synergy_types=set(),
-        commander_cmc=0,
-        lands=[],
-        spells=[],
-        total_lands=34,
-        total_spells=64,
-        type_distribution=Counter(),
-        source_count=Counter(),
-        speed_counts=Counter({"untapped": 0, "shock": 0, "conditional": 0, "tapped": 0}),
-        pip_counts=Counter(),
-        needs_colour=Counter(),
-        total_pips=0,
-        rocks=[],
-        mana_creatures=[],
-        rock_total=0.0,
-        effective_land_count=34.0,
-        synergy_targets=[],
-        non_synergy_creatures=[],
-        cmc_counter=Counter(),
-        balance_data={},
-        eff_low=33.0,
-        eff_high=36.0,
-        land_target_label="33-35 raw",
-        card_map_size=0,
-    )
+    """analyze --json must surface total_cards / expected for the format (99 vs 100)."""
+    stub = _stub_deck_stats(tmp_path, card_count=99)  # one short on purpose
     mocker.patch("manascope.analyze._compute_stats", return_value=stub)
 
     decklist = tmp_path / "d.txt"
@@ -268,15 +266,28 @@ def test_analyze_json_includes_card_count_block(
     assert payload["cards"]["lands"] == 34
 
 
-def test_analyze_json_flag(mocker: pytest_mock.MockerFixture, tmp_path: Path) -> None:
-    mock_run_analyze = mocker.patch("manascope.analyze.run")
-    decklist_file = tmp_path / "dummy.txt"
-    decklist_file.write_text("1 Commander\n")
+def test_analyze_json_reports_commander_creature_types(
+    mocker: pytest_mock.MockerFixture, tmp_path: Path
+) -> None:
+    """Creature-type matches use ``creature_types``, not the EDHREC-ambiguous ``synergy``."""
+    goblin = {"name": "Goblin Instigator"}
+    stub = _stub_deck_stats(
+        tmp_path,
+        synergy_types={"warrior", "goblin"},
+        synergy_targets=[goblin, goblin, {"name": "Goblin Matron"}],
+    )
+    mocker.patch("manascope.analyze._compute_stats", return_value=stub)
 
-    result = runner.invoke(app, ["analyze", "--decklist", str(decklist_file), "--json"])
-    assert result.exit_code == 0
-    mock_run_analyze.assert_called_once()
-    assert mock_run_analyze.call_args[1]["json_flag"] is True
+    decklist = tmp_path / "d.txt"
+    decklist.write_text("1 X (NEO) 1\n")
+    result = runner.invoke(app, ["analyze", "--decklist", str(decklist), "--json"])
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["creature_types"] == {"types": ["goblin", "warrior"], "matches": 2}
+    assert "synergy" not in payload
+
+    result = runner.invoke(app, ["analyze", "--decklist", str(decklist), "--agent"])
+    assert "[Creature Types] Goblin/Warrior, Matches:2" in result.stdout
 
 
 def test_review_json_flag(mocker: pytest_mock.MockerFixture, tmp_path: Path) -> None:
@@ -290,41 +301,13 @@ def test_review_json_flag(mocker: pytest_mock.MockerFixture, tmp_path: Path) -> 
     assert mock_run_review.call_args[1]["json_flag"] is True
 
 
-def test_edhrec_json_flag(mocker: pytest_mock.MockerFixture) -> None:
-    mocker.patch("manascope.edhrec.open_cache")
-    mocker.patch(
-        "manascope.edhrec.fetch_commander",
-        return_value={"header": "Test Commander (Commander)"},
-    )
-    mocker.patch("manascope.edhrec.num_decks", return_value=100)
-
-    mock_td = mocker.Mock()
-    mock_td._asdict.return_value = {"Creature": 10}
-    mocker.patch("manascope.edhrec.type_distribution", return_value=mock_td)
-    mocker.patch("manascope.edhrec.mana_curve", return_value={"1": 5})
-    mocker.patch("manascope.edhrec.high_lift_cards", return_value=[])
-    mocker.patch("manascope.edhrec.combos", return_value=[])
-    mocker.patch("manascope.edhrec.tags", return_value=[])
-
-    result = runner.invoke(app, ["edhrec", "Test", "Commander", "--json"])
-    assert result.exit_code == 0
-    output_data = json.loads(result.stdout)
-    # Suffix must be stripped from the canonical name.
-    assert output_data["name"] == "Test Commander"
-    assert output_data["num_decks"] == 100
-
-
 def test_edhrec_json_emits_full_recommended_list(mocker: pytest_mock.MockerFixture) -> None:
-    """--top N should expose all top-N recommendations (not just top-10 high-lift).
-
-    Regression for the agent workflow gap that forced bootstrapping a stub deck
-    just to read the top-80 list out of `pipeline.review.gaps_owned`.
-    """
-    from manascope.edhrec import SynergyCard
+    """--top N should expose all top-N recommendations (not just top-10 high-lift)."""
+    from manascope.edhrec import RecommendedCard
 
     mocker.patch("manascope.edhrec.open_cache")
-    mocker.patch("manascope.edhrec.fetch_commander", return_value={"header": "X"})
-    mocker.patch("manascope.edhrec.num_decks", return_value=1)
+    mocker.patch("manascope.edhrec.fetch_commander", return_value={"header": "X (Commander)"})
+    mocker.patch("manascope.edhrec.num_decks", return_value=100)
     td = mocker.Mock()
     td._asdict.return_value = {}
     mocker.patch("manascope.edhrec.type_distribution", return_value=td)
@@ -334,7 +317,7 @@ def test_edhrec_json_emits_full_recommended_list(mocker: pytest_mock.MockerFixtu
     mocker.patch("manascope.edhrec.tags", return_value=[])
 
     fake_cards = [
-        SynergyCard(
+        RecommendedCard(
             name=f"Card {i}",
             synergy=0.5,
             inclusion=10,
@@ -349,6 +332,8 @@ def test_edhrec_json_emits_full_recommended_list(mocker: pytest_mock.MockerFixtu
     result = runner.invoke(app, ["edhrec", "X", "--json", "--top", "30"])
     assert result.exit_code == 0, result.stdout
     output = json.loads(result.stdout)
+    assert output["name"] == "X"  # " (Commander)" suffix stripped
+    assert output["num_decks"] == 100
     assert "recommended" in output
     assert len(output["recommended"]) == 30
     assert output["recommended"][0]["name"] == "Card 0"
@@ -405,12 +390,8 @@ def test_lookup_default_does_not_pass_minimal(
 
 
 def test_prime_json_emits_primed_card_report(mocker: pytest_mock.MockerFixture) -> None:
-    """prime --json must emit a structured report of every primed card.
-
-    Closes the gap where agents had to follow `prime` with `lookup` just to
-    confirm what landed in cache.
-    """
-    from manascope.edhrec import SynergyCard
+    """prime --json must emit a structured report of every primed card."""
+    from manascope.edhrec import RecommendedCard
 
     mocker.patch("manascope.edhrec.open_cache")
     mocker.patch(
@@ -421,21 +402,21 @@ def test_prime_json_emits_primed_card_report(mocker: pytest_mock.MockerFixture) 
     mocker.patch(
         "manascope.edhrec.all_recommended_cards",
         return_value=[
-            SynergyCard(
+            RecommendedCard(
                 name="Parhelion II",
                 synergy=0.9,
                 inclusion=80,
                 potential_decks=100,
                 category="top",
             ),
-            SynergyCard(
+            RecommendedCard(
                 name="Bone Shards",
                 synergy=0.7,
                 inclusion=60,
                 potential_decks=100,
                 category="top",
             ),
-            SynergyCard(
+            RecommendedCard(
                 name="Vanished Card",
                 synergy=0.6,
                 inclusion=40,
@@ -615,11 +596,7 @@ def test_build_command_surfaces_value_errors(
 def test_verify_json_emits_structured_output(
     mocker: pytest_mock.MockerFixture, tmp_path: Path
 ) -> None:
-    """verify --json must return a parseable JSON payload (no human prose).
-
-    Closes the gap that AGENTS.md flagged about verify being the only
-    command without a dense mode.
-    """
+    """verify --json must return a parseable JSON payload (no human prose)."""
     mocker.patch(
         "manascope.verify.verify_decklist",
         return_value={
@@ -670,8 +647,8 @@ def test_verify_fix_rewrites_bad_printings(
 
     cache_db = tmp_path / "cache.db"
     conn: sqlite3.Connection = open_cache(cache_db)
-    # Cache has Parhelion II under (war, 26) but the decklist refers to
-    # the bogus printing (xyz, 999) — simulating my real-session mistake.
+    # Cache has Parhelion II under (war, 26) but the decklist refers to a bogus
+    # printing (xyz, 999).
     payload = json.dumps(
         {"name": "Parhelion II", "set": "war", "collector_number": "26", "rarity": "rare"}
     )
@@ -683,7 +660,7 @@ def test_verify_fix_rewrites_bad_printings(
     conn.close()
 
     decklist = tmp_path / "deck.txt"
-    decklist.write_text("1 Parhelion II (XYZ) 999\n", encoding="utf-8")
+    decklist.write_text("1 Parhelion II (XYZ) 999 *F*\n", encoding="utf-8")
     csv = tmp_path / "c.csv"
     csv.write_text(
         "Count,Name,Edition,Condition,Language,Foil,Tag\n1,Parhelion II,WAR,Near Mint,English,,\n",
@@ -707,9 +684,9 @@ def test_verify_fix_rewrites_bad_printings(
     assert result.exit_code == 0, result.stdout
     payload = json.loads(result.stdout)
     assert payload["fix"]["rewritten"] == 1
-    # The decklist file should now reference the cached printing.
+    # The decklist file should now reference the cached printing, keeping the marker.
     rewritten = decklist.read_text(encoding="utf-8")
-    assert "Parhelion II (WAR) 26" in rewritten
+    assert "Parhelion II (WAR) 26 *F*" in rewritten
 
 
 def test_verify_fix_leaves_unresolvable_lines_untouched(

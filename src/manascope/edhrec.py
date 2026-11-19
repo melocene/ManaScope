@@ -29,6 +29,13 @@ DEFAULT_TTL_DAYS = 14
 # page EDHREC still serves without lift is requested at most once per day.
 PRE_LIFT_TTL_DAYS = 1
 REQUEST_DELAY = 0.30  # 300 ms between requests (be a good citizen)
+# Cards in >= 50% of decks in a commander's colours are "staples" (EDHREC's
+# "ubiquitous"). Their lift can't exceed 2.0, so lift can't judge them. See
+# https://edhrec.com/articles/from-synergy-to-lift-the-math-behind-edhrecs-new-era
+STAPLE_COLOUR_PCT = 50.0
+# Top lift at or below this means one commander dominates its colours (often a
+# precon), so lift barely separates cards.
+COMPRESSED_LIFT_MAX = 2.0
 # Network timeout (seconds). EDHREC responses are small JSON pages, so
 # a shorter timeout than Scryfall's /cards/collection payload is fine.
 REQUEST_TIMEOUT = 15
@@ -95,14 +102,13 @@ class TypeDistribution(NamedTuple):
         return floored
 
 
-class SynergyCard(NamedTuple):
+class RecommendedCard(NamedTuple):
     """A card recommendation from EDHREC with lift/inclusion data.
 
-    EDHREC replaced its synergy percentage with *lift*: how often the card is
-    run with this commander relative to random chance. ``1.0`` means no
-    association, ``3.0`` means three times as often as chance, and values below
-    ``1.0`` mean it is played less often than chance. Lift is a ratio, not a
-    percentage. ``synergy`` is kept only to rank pre-lift cache entries.
+    ``lift`` is EDHREC's replacement for synergy (``1.0`` = no association with
+    the commander); see
+    https://edhrec.com/articles/from-synergy-to-lift-the-math-behind-edhrecs-new-era.
+    ``synergy`` is kept only to rank pre-lift cache entries.
     """
 
     name: str
@@ -152,6 +158,25 @@ class SynergyCard(NamedTuple):
         if self.lift is not None:
             return {"lift": round(self.lift, 2)}
         return {"lift": None, "synergy": self.synergy_pct}
+
+    @property
+    def colour_pct(self) -> float | None:
+        """Estimated % of decks in the commander's colours that run this card.
+
+        inclusion / lift, or inclusion - synergy on pre-lift pages (the two agree).
+        Approximate: EDHREC also adjusts deck counts for release dates.
+        """
+        if self.lift is not None:
+            return round(min(self.inclusion_pct / self.lift, 100.0), 1) if self.lift > 0 else None
+        if self.potential_decks:
+            return round(max(self.inclusion_pct - self.synergy_pct, 0.0), 1)
+        return None
+
+    @property
+    def is_staple(self) -> bool:
+        """True if most decks in these colours run this card, whatever the commander."""
+        share = self.colour_pct
+        return share is not None and share >= STAPLE_COLOUR_PCT
 
 
 class Combo(NamedTuple):
@@ -436,10 +461,10 @@ def mana_curve(data: dict[str, Any]) -> dict[int, int]:
     return {int(k): v for k, v in raw.items()}
 
 
-def _card_from_view(cv: dict[str, Any], tag: str) -> SynergyCard:
-    """Build a SynergyCard from one EDHREC ``cardviews`` entry."""
+def _card_from_view(cv: dict[str, Any], tag: str) -> RecommendedCard:
+    """Build a RecommendedCard from one EDHREC ``cardviews`` entry."""
     lift = cv.get("lift")
-    return SynergyCard(
+    return RecommendedCard(
         name=cv["name"],
         synergy=cv.get("synergy", 0.0),
         inclusion=cv.get("num_decks", cv.get("inclusion", 0)),
@@ -449,7 +474,7 @@ def _card_from_view(cv: dict[str, Any], tag: str) -> SynergyCard:
     )
 
 
-def _extract_cardlist(data: dict[str, Any], tag: str) -> list[SynergyCard]:
+def _extract_cardlist(data: dict[str, Any], tag: str) -> list[RecommendedCard]:
     """Extract a card list by its tag from the EDHREC JSON structure."""
     cardlists = data.get("container", {}).get("json_dict", {}).get("cardlists", [])
     for cl in cardlists:
@@ -458,7 +483,7 @@ def _extract_cardlist(data: dict[str, Any], tag: str) -> list[SynergyCard]:
     return []
 
 
-def high_lift_cards(data: dict[str, Any]) -> list[SynergyCard]:
+def high_lift_cards(data: dict[str, Any]) -> list[RecommendedCard]:
     """Cards with the highest lift for this commander.
 
     Falls back to the legacy ``highsynergycards`` list for pre-lift cache entries.
@@ -466,17 +491,17 @@ def high_lift_cards(data: dict[str, Any]) -> list[SynergyCard]:
     return _extract_cardlist(data, "highliftcards") or _extract_cardlist(data, "highsynergycards")
 
 
-def top_cards(data: dict[str, Any]) -> list[SynergyCard]:
+def top_cards(data: dict[str, Any]) -> list[RecommendedCard]:
     """Most-included cards overall (beyond just high lift)."""
     return _extract_cardlist(data, "topcards")
 
 
-def game_changers(data: dict[str, Any]) -> list[SynergyCard]:
+def game_changers(data: dict[str, Any]) -> list[RecommendedCard]:
     """Powerful staples that appear in many decks for this commander."""
     return _extract_cardlist(data, "gamechangers")
 
 
-def new_cards(data: dict[str, Any]) -> list[SynergyCard]:
+def new_cards(data: dict[str, Any]) -> list[RecommendedCard]:
     """Recently printed cards appearing in this commander's decks."""
     return _extract_cardlist(data, "newcards")
 
@@ -484,7 +509,7 @@ def new_cards(data: dict[str, Any]) -> list[SynergyCard]:
 def cards_by_category(
     data: dict[str, Any],
     category: str | None = None,
-) -> dict[str, list[SynergyCard]]:
+) -> dict[str, list[RecommendedCard]]:
     """Extract card lists by category.
 
     If category is None, returns all categories as a dict.
@@ -497,7 +522,7 @@ def cards_by_category(
         "manaartifacts", "lands"
     """
     cardlists = data.get("container", {}).get("json_dict", {}).get("cardlists", [])
-    result: dict[str, list[SynergyCard]] = {}
+    result: dict[str, list[RecommendedCard]] = {}
     for cl in cardlists:
         tag = cl.get("tag", "")
         if category is not None and tag != category:
@@ -506,13 +531,13 @@ def cards_by_category(
     return result
 
 
-def all_recommended_cards(data: dict[str, Any]) -> list[SynergyCard]:
+def all_recommended_cards(data: dict[str, Any]) -> list[RecommendedCard]:
     """Return every recommended card across all categories.
 
     Deduplicates by name, keeping the highest-scoring entry, and sorts by
     lift descending (legacy synergy for pre-lift cache entries).
     """
-    seen: dict[str, SynergyCard] = {}
+    seen: dict[str, RecommendedCard] = {}
     for cards in cards_by_category(data).values():
         for card in cards:
             existing = seen.get(card.name)
@@ -570,20 +595,6 @@ def tags(data: dict[str, Any]) -> list[TagInfo]:
         for entry in raw
     ]
     return sorted(result, key=lambda t: t.deck_count, reverse=True)
-
-
-def similar_commanders(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return the list of similar commander dicts from EDHREC data.
-
-    Each dict includes 'name', 'color_identity', 'type', 'sanitized',
-    'url', and pricing info.
-    """
-    return data.get("similar", [])
-
-
-def average_deck_price(data: dict[str, Any]) -> float:
-    """Return the average deck price in USD (cents), or 0.0 if unavailable."""
-    return float(data.get("avg_price", 0.0))
 
 
 def num_decks(data: dict[str, Any]) -> int:

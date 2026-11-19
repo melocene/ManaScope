@@ -8,7 +8,21 @@ from pathlib import Path
 import pytest
 
 from manascope.deck import CardIdentifier
-from manascope.verify import verify_decklist
+from manascope.verify import _is_owned, verify_decklist
+
+
+class TestIsOwned:
+    """DFC name matching; some exports use a single slash between faces."""
+
+    def test_single_slash_matches_double_slash(self) -> None:
+        owned = {"virtue of loyalty // ardenvale fealty"}
+        assert _is_owned("Virtue of Loyalty / Ardenvale Fealty", owned)
+
+    def test_front_face_only_in_collection(self) -> None:
+        assert _is_owned("Virtue of Loyalty / Ardenvale Fealty", {"virtue of loyalty"})
+
+    def test_dfc_not_owned(self) -> None:
+        assert not _is_owned("Virtue of Loyalty / Ardenvale Fealty", {"sol ring"})
 
 
 @pytest.fixture()
@@ -171,23 +185,19 @@ class TestVerifyDecklistPrintings:
         assert result["missing"][0]["name"] == "Phantom Card"
 
     def test_dfc_front_face_matches_printing(self, cache: sqlite3.Connection) -> None:
-        """Decklists often spell only the front face of a DFC; matching against
-        either the full or front-face name in owned_printings should succeed.
-        """
+        """A full DFC name in the decklist matches a front-face-only printing key."""
         entries = [
             (
                 1,
                 CardIdentifier(
-                    set_code="NEO", collector_number="220", name="Greasefang, Okiba Boss"
+                    set_code="NEO",
+                    collector_number="220",
+                    name="Greasefang, Okiba Boss // Some Backside",
                 ),
             )
         ]
         owned = {"greasefang, okiba boss"}
-        # Collection key uses the full DFC name; verify still matches.
-        owned_printings = {("greasefang, okiba boss // some backside", "neo", "220")}
-        # And the front-face form must also work — both keys are commonly
-        # indexed by the loader.
-        owned_printings.add(("greasefang, okiba boss", "neo", "220"))
+        owned_printings = {("greasefang, okiba boss", "neo", "220")}
         result = verify_decklist(entries, owned, cache, owned_printings=owned_printings)
         assert result["wrong_printing_count"] == 0
 
@@ -204,11 +214,9 @@ class TestVerifyDecklistPrintings:
         assert result["missing_count"] == 0
 
     def test_collector_number_normalized(self, cache: sqlite3.Connection) -> None:
-        """Collector numbers compare case-insensitively and ignore surrounding
-        whitespace so casing/format quirks don't cause false negatives.
-        """
+        """Collector numbers compare case-insensitively and ignore surrounding whitespace."""
         entries = [
-            (1, CardIdentifier(set_code="PBRO", collector_number="170S", name="Awaken the Woods"))
+            (1, CardIdentifier(set_code="PBRO", collector_number=" 170S ", name="Awaken the Woods"))
         ]
         owned = {"awaken the woods"}
         owned_printings = {("awaken the woods", "pbro", "170s")}

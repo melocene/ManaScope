@@ -11,12 +11,13 @@ import json
 import re
 import sqlite3
 import sys
+import textwrap
 from pathlib import Path
 
 from manascope import DB_PATH, deck
 from manascope import edhrec as ec
 from manascope import scryfall as sc
-from manascope.collection import load_collection
+from manascope.collection import BASIC_LANDS, load_collection
 
 # Constants
 
@@ -123,11 +124,56 @@ def _col_header() -> None:
     print("  " + _sep("-", W - 2))
 
 
-def _card_row(card: ec.SynergyCard, type_abbr: str = "", cmc: str = "", status: str = "") -> None:
+def _card_row(
+    card: ec.RecommendedCard, type_abbr: str = "", cmc: str = "", status: str = ""
+) -> None:
     name = card.name[:35]
     print(
         f"  {name:<35}  {type_abbr:<14}  {cmc:>3}  {card.score_label:>6}  {card.inclusion_pct:>4.0f}%  {status}"
     )
+
+
+def _is_basic_land_name(name: str) -> bool:
+    low = name.lower()
+    return low in BASIC_LANDS or low == "wastes" or low.startswith("snow-covered ")
+
+
+def lowest_lift_non_staples(
+    in_deck: list[ec.RecommendedCard], n: int = 5
+) -> list[ec.RecommendedCard]:
+    """Return up to *n* lowest-lift non-staples, lowest first.
+
+    *in_deck* must be sorted by lift descending (as from ``all_recommended_cards``).
+    """
+    non_staples = [c for c in in_deck if not c.is_staple]
+    return non_staples[::-1][:n]
+
+
+def cut_review(
+    all_recs: list[ec.RecommendedCard],
+    deck_cards: list[str],
+    commander_name: str,
+    n: int = 5,
+) -> tuple[list[ec.RecommendedCard], list[ec.RecommendedCard], list[str]]:
+    """Check deck cards against EDHREC's full list (not just the top N).
+
+    Skips basics and the commander. Returns ``(lowest_lift, staples,
+    not_on_edhrec)``; off-list cards have no EDHREC data and are often deliberate.
+    """
+
+    def keys(name: str) -> set[str]:
+        low = name.lower()
+        return {low, low.split(" // ", 1)[0]}
+
+    skip = keys(commander_name)
+    cards = [n_ for n_ in deck_cards if not _is_basic_land_name(n_) and not keys(n_) & skip]
+    deck_keys = set().union(*(keys(c) for c in cards)) if cards else set()
+    rec_keys = set().union(*(keys(c.name) for c in all_recs)) if all_recs else set()
+
+    deck_recs = [c for c in all_recs if keys(c.name) & deck_keys]
+    not_on_edhrec = [c for c in cards if not keys(c) & rec_keys]
+    staples = [c for c in deck_recs if c.is_staple]
+    return lowest_lift_non_staples(deck_recs, n), staples, not_on_edhrec
 
 
 def _type_abbr(cj: dict | None) -> str:
@@ -157,23 +203,6 @@ def _cmc_str(cj: dict | None) -> str:
         return ""
     cmc = cj.get("cmc", 0)
     return str(int(cmc))
-
-
-# Cache helpers
-
-
-def _lookup_json(conn: sqlite3.Connection, name: str) -> dict | None:
-    """Return the parsed full_json for a card by name, or None if not cached."""
-    row = conn.execute(
-        "SELECT full_json FROM cards WHERE LOWER(name) = LOWER(?)", (name,)
-    ).fetchone()
-    if not row:
-        # Double-faced cards stored as "Front // Back"
-        row = conn.execute(
-            r"SELECT full_json FROM cards WHERE LOWER(name) LIKE LOWER(?) ESCAPE '\'",
-            (sc._escape_like(name) + " // %",),
-        ).fetchone()
-    return json.loads(row[0]) if row else None
 
 
 # Theme matching
@@ -221,8 +250,13 @@ def run_edhrec_section(
     agent: bool = False,
     json_flag: bool = False,
     return_data: bool = False,
+    deck_cards: list[str] | None = None,
 ) -> dict | None:
-    """Run the EDHREC cross-reference section."""
+    """Run the EDHREC cross-reference section.
+
+    *deck_cards* is the deck's nonland card names (one per card) for the cut
+    review; when omitted it is derived from *deck_names*.
+    """
     verbose = not (agent or json_flag)
     if verbose:
         print()
@@ -240,24 +274,36 @@ def run_edhrec_section(
     num_decks = ec.num_decks(data)
     all_recs = ec.all_recommended_cards(data)
     evaluated = all_recs[:top_n]
+    top_lift = max((c.lift for c in all_recs if c.lift is not None), default=None)
+    lift_compressed = top_lift is not None and top_lift <= ec.COMPRESSED_LIFT_MAX
+    compressed_note = (
+        f"Lift is compressed (top {top_lift:.2f}x): this commander makes up much of "
+        "its colours' decks (common for popular precons), so lift barely separates "
+        "cards. Weigh inclusion and each card's role instead."
+        if lift_compressed and top_lift is not None
+        else ""
+    )
 
     if verbose:
         print(f"  {num_decks:,} Commander decks sampled  ·  evaluating top {top_n} by lift")
+        if compressed_note:
+            for line in textwrap.wrap(compressed_note, width=W - 4):
+                print(f"  {line}")
         print(f"  Format legality check: {fmt}")
         if owned:
             print(f"  Collection loaded: {len(owned):,} unique cards")
 
     # Classify
-    in_deck: list[ec.SynergyCard] = []
-    gap_owned: list[ec.SynergyCard] = []
-    gap_unowned: list[ec.SynergyCard] = []
-    not_legal: list[ec.SynergyCard] = []
-    not_cached: list[ec.SynergyCard] = []
+    in_deck: list[ec.RecommendedCard] = []
+    gap_owned: list[ec.RecommendedCard] = []
+    gap_unowned: list[ec.RecommendedCard] = []
+    not_legal: list[ec.RecommendedCard] = []
+    not_cached: list[ec.RecommendedCard] = []
 
     card_data: dict[str, dict | None] = {}
 
     for card in evaluated:
-        cj = _lookup_json(conn, card.name)
+        cj = sc.get_card_by_name(conn, card.name)
         if cj is None:
             not_cached.append(card)
             continue
@@ -272,6 +318,26 @@ def run_edhrec_section(
         else:
             gap_unowned.append(card)
 
+    # Cut review covers every EDHREC-listed deck card, not just the top N.
+    if deck_cards is None:
+        fronts = {n.split(" // ", 1)[0] for n in deck_names if " // " in n}
+        deck_cards = sorted(n for n in deck_names if n not in fronts)
+    lowest, staples, not_on_edhrec = cut_review(all_recs, deck_cards, commander_name)
+    for c in (*lowest, *staples):
+        if c.name not in card_data:
+            card_data[c.name] = sc.get_card_by_name(conn, c.name)
+
+    def _entry(c: ec.RecommendedCard) -> dict:
+        cj = card_data.get(c.name) or {}
+        return {
+            "name": c.name,
+            **c.score_fields,
+            "inclusion": c.inclusion_pct,
+            **({"staple": True} if c.is_staple else {}),
+            "type": _type_abbr(cj or None),
+            "cmc": cj.get("cmc", 0),
+        }
+
     if json_flag or return_data:
         import json
 
@@ -282,34 +348,17 @@ def run_edhrec_section(
                 "gaps_owned": len(gap_owned),
                 "gaps_not_owned": len(gap_unowned),
                 "skipped": len(not_cached),
+                "top_lift": round(top_lift, 2) if top_lift is not None else None,
+                "lift_compressed": lift_compressed,
             },
-            "in_deck": [
-                {
-                    "name": c.name,
-                    **c.score_fields,
-                    "type": _type_abbr(card_data.get(c.name)),
-                    "cmc": (card_data.get(c.name) or {}).get("cmc", 0),
-                }
-                for c in in_deck
-            ],
-            "gaps_owned": [
-                {
-                    "name": c.name,
-                    **c.score_fields,
-                    "type": _type_abbr(card_data.get(c.name)),
-                    "cmc": (card_data.get(c.name) or {}).get("cmc", 0),
-                }
-                for c in gap_owned
-            ],
-            "gaps_not_owned": [
-                {
-                    "name": c.name,
-                    **c.score_fields,
-                    "type": _type_abbr(card_data.get(c.name)),
-                    "cmc": (card_data.get(c.name) or {}).get("cmc", 0),
-                }
-                for c in gap_unowned
-            ],
+            "in_deck": [_entry(c) for c in in_deck],
+            "gaps_owned": [_entry(c) for c in gap_owned],
+            "gaps_not_owned": [_entry(c) for c in gap_unowned],
+            "cut_review": {
+                "lowest_lift": [_entry(c) for c in lowest],
+                "staples": [{**_entry(c), "colour_share": c.colour_pct} for c in staples],
+                "not_on_edhrec": not_on_edhrec,
+            },
         }
         if return_data:
             return out_data
@@ -321,10 +370,26 @@ def run_edhrec_section(
             f"[EDHREC Stats] Sample:{num_decks}, InDeck:{len(in_deck)}, "
             f"GapsOwned:{len(gap_owned)}, GapsNotOwned:{len(gap_unowned)}"
         )
-        go_str = [f"{c.name}({c.score_label})" for c in gap_owned]
-        print(f"[Gaps Owned] {', '.join(go_str)}")
-        gu_str = [f"{c.name}({c.score_label})" for c in gap_unowned[:20]]
-        print(f"[Gaps Not Owned (Top 20)] {', '.join(gu_str)}")
+        if compressed_note:
+            print(f"[Note] {compressed_note}")
+
+        def _gap(c: ec.RecommendedCard) -> str:
+            return f"{c.name}({c.score_label}, inc {c.inclusion_pct:.0f}%)"
+
+        def _staple(c: ec.RecommendedCard) -> str:
+            return (
+                f"{c.name}({c.score_label}, inc {c.inclusion_pct:.0f}%, "
+                f"colours ~{c.colour_pct or 0:.0f}%)"
+            )
+
+        print(f"[Gaps Owned] {', '.join(_gap(c) for c in gap_owned)}")
+        print(f"[Gaps Not Owned (Top 20)] {', '.join(_gap(c) for c in gap_unowned[:20])}")
+        if lowest:
+            print(f"[Lowest Lift In Deck] {', '.join(_gap(c) for c in lowest)}")
+        if staples:
+            print(f"[Staples In Deck] {', '.join(_staple(c) for c in staples)}")
+        if not_on_edhrec:
+            print(f"[Not On EDHREC] ({len(not_on_edhrec)}) {', '.join(not_on_edhrec)}")
         if not_cached:
             print(f"[Skipped] {len(not_cached)} not cached.")
         return
@@ -340,15 +405,39 @@ def run_edhrec_section(
             c, _type_abbr(card_data.get(c.name)), _cmc_str(card_data.get(c.name)), "* in deck"
         )
 
-    # --- Lowest lift (potential cut candidates) ---
-    if len(in_deck) >= 5 and not compact:
-        bottom = in_deck[-5:]  # already sorted descending, so last 5 are lowest
-        print()
-        print("  ┌─ Lowest lift in your deck (potential cut candidates):")
-        for c in reversed(bottom):  # show ascending (worst first)
+    # --- Cut review: statistics only, so the user can judge fit ---
+    if (lowest or staples or not_on_edhrec) and not compact:
+
+        def _box_row(c: ec.RecommendedCard, extra: str = "") -> None:
             ta = _type_abbr(card_data.get(c.name))
             cm = _cmc_str(card_data.get(c.name))
-            print(f"  │  {c.name:<35}  {ta:<14}  {cm:>3}  {c.score_label:>6}")
+            print(
+                f"  │  {c.name[:35]:<35}  {ta:<14}  {cm:>3}  {c.score_label:>6}  "
+                f"{c.inclusion_pct:>4.0f}%{extra}"
+            )
+
+        print()
+        print("  ┌─ Cut review (EDHREC stats only; check fit first)")
+        if lowest:
+            print("  │  Lowest lift in your deck:")
+            for c in lowest:
+                _box_row(c)
+        if staples:
+            print("  │")
+            print("  │  Staples (in most decks of these colours) - lift can't rank these:")
+            for c in staples:
+                _box_row(c, f"  (~{c.colour_pct or 0:.0f}% of decks in these colours)")
+        if not_on_edhrec:
+            print("  │")
+            print(
+                f"  │  Not on EDHREC's list for this commander ({len(not_on_edhrec)}) - "
+                "no data, often deliberate:"
+            )
+            shown = ", ".join(not_on_edhrec[:12])
+            if len(not_on_edhrec) > 12:
+                shown += f", +{len(not_on_edhrec) - 12} more (see --json)"
+            for line in textwrap.wrap(shown, width=W - 8):
+                print(f"  │    {line}")
         print("  └─")
 
     # --- 2: Owned gaps - primary target ---
@@ -358,7 +447,7 @@ def run_edhrec_section(
         _section_header(
             "2. LEGAL + OWNED - MISSING FROM DECK",
             len(gap_owned),
-            "★ primary upgrade targets ★",
+            "owned options to consider",
         )
         _col_header()
     for c in gap_owned:
@@ -565,11 +654,17 @@ def run(
     # cards are never misclassified as EDHREC gaps.
     # For DFCs stored as "Front // Back", also index the front face name alone
     # so that EDHREC references (which use the front face only) match correctly.
-    # This mirrors the reverse lookup already done in _lookup_json.
+    # This mirrors the reverse lookup already done in sc.get_card_by_name.
     deck_names: set[str] = set()
+    deck_cards: list[str] = []
     for _, ident in txt_entries:
         key = (ident.set_code.lower(), ident.collector_number.lower())
         cj = card_map.get(key)
+        name = cj.get("name", ident.name) if cj else ident.name
+        # Cut review skips lands: their lift mostly reflects colours, and
+        # analyze already covers the mana base.
+        if name not in deck_cards and not (cj and deck.is_land(cj)):
+            deck_cards.append(name)
         if cj:
             full_name = cj.get("name", ident.name)
             deck_names.add(full_name.lower())
@@ -634,6 +729,7 @@ def run(
             agent=agent,
             json_flag=json_flag,
             return_data=return_data,
+            deck_cards=deck_cards,
         )
 
         if return_data:

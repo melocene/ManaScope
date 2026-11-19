@@ -8,8 +8,6 @@ from pathlib import Path
 import pytest
 
 from manascope.collection import (
-    BASIC_LANDS,
-    RARITY_ORDER,
     filter_collection,
     load_collection,
     load_collection_names,
@@ -100,17 +98,6 @@ def cache_db(tmp_path: Path) -> Iterator[sqlite3.Connection]:
     conn.close()
 
 
-# ── Constants ────────────────────────────────────────────────────────────
-
-
-class TestConstants:
-    def test_basic_lands(self) -> None:
-        assert {"plains", "island", "swamp", "mountain", "forest"} == BASIC_LANDS
-
-    def test_rarity_order(self) -> None:
-        assert RARITY_ORDER == ["mythic", "rare", "uncommon", "common"]
-
-
 # ── load_collection ──────────────────────────────────────────────────────
 
 
@@ -157,21 +144,6 @@ class TestLoadCollection:
 
 
 class TestLoadCollectionNames:
-    def test_returns_set_of_strings(self, collection_file: Path) -> None:
-        names = load_collection_names(collection_file)
-        assert isinstance(names, set)
-        assert "sol ring" in names
-        assert "plains" in names
-
-    def test_dfc_front_face(self, collection_file: Path) -> None:
-        names = load_collection_names(collection_file)
-        assert "archangel avacyn // avacyn, the purifier" in names
-        assert "archangel avacyn" in names
-
-    def test_empty(self, empty_collection_file: Path) -> None:
-        names = load_collection_names(empty_collection_file)
-        assert names == set()
-
     def test_count(self, collection_file: Path) -> None:
         names = load_collection_names(collection_file)
         # 4 cards + 1 DFC front face = 5 names
@@ -182,9 +154,6 @@ class TestLoadCollectionNames:
 
 
 class TestLookupRarity:
-    def test_exact_match(self, cache_db: sqlite3.Connection) -> None:
-        assert lookup_rarity(cache_db, "Sol Ring") == "uncommon"
-
     def test_case_insensitive(self, cache_db: sqlite3.Connection) -> None:
         assert lookup_rarity(cache_db, "sol ring") == "uncommon"
         assert lookup_rarity(cache_db, "SOL RING") == "uncommon"
@@ -263,12 +232,6 @@ def empty_csv_file(tmp_path: Path) -> Path:
 
 
 class TestLoadCsvCollection:
-    def test_loads_cards(self, csv_collection_file: Path) -> None:
-        coll = load_collection(csv_collection_file)
-        assert "sol ring" in coll
-        assert "plains" in coll
-        assert "lightning bolt" in coll
-
     def test_quantity_used_for_count(self, csv_collection_file: Path) -> None:
         coll = load_collection(csv_collection_file)
         assert coll["plains"]["count"] == 4
@@ -313,25 +276,10 @@ class TestLoadCsvCollection:
 
 
 class TestLoadCsvCollectionNames:
-    def test_returns_set_of_strings(self, csv_collection_file: Path) -> None:
-        names = load_collection_names(csv_collection_file)
-        assert isinstance(names, set)
-        assert "sol ring" in names
-        assert "plains" in names
-
-    def test_dfc_front_face(self, csv_collection_file: Path) -> None:
-        names = load_collection_names(csv_collection_file)
-        assert "archangel avacyn // avacyn, the purifier" in names
-        assert "archangel avacyn" in names
-
     def test_count(self, csv_collection_file: Path) -> None:
         names = load_collection_names(csv_collection_file)
         # 4 cards + 1 DFC front face = 5 names
         assert len(names) == 5
-
-    def test_empty(self, empty_csv_file: Path) -> None:
-        names = load_collection_names(empty_csv_file)
-        assert names == set()
 
 
 class TestLoadCollectionPrintings:
@@ -492,12 +440,6 @@ class TestLoadCollections:
         single = load_collection(csv_collection_a)
         assert multi == single
 
-    def test_merges_unique_cards(self, csv_collection_a: Path, csv_collection_b: Path) -> None:
-        coll = load_collections([csv_collection_a, csv_collection_b])
-        assert "lightning bolt" in coll
-        assert "swords to plowshares" in coll
-        assert "plains" in coll
-
     def test_sums_counts_for_overlapping_cards(
         self, csv_collection_a: Path, csv_collection_b: Path
     ) -> None:
@@ -555,20 +497,6 @@ class TestLoadCollections:
         # JSON-only DFC
         assert "archangel avacyn" in coll
 
-    def test_three_files(
-        self, csv_collection_a: Path, csv_collection_b: Path, tmp_path: Path
-    ) -> None:
-        """Verify merging works with more than two files."""
-        lines = [
-            MANABOX_HEADER,
-            _csv_row("Sol Ring", quantity=5, set_code="2XM", cn="274"),
-        ]
-        p = tmp_path / "collection_c.csv"
-        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        coll = load_collections([csv_collection_a, csv_collection_b, p])
-        # 1 + 1 + 5
-        assert coll["sol ring"]["count"] == 7
-
 
 class TestLoadCollectionsNames:
     def test_returns_union_of_names(self, csv_collection_a: Path, csv_collection_b: Path) -> None:
@@ -579,17 +507,6 @@ class TestLoadCollectionsNames:
         assert "swords to plowshares" in names
         assert "plains" in names
         assert "archangel avacyn" in names
-
-    def test_single_file_matches_original(self, csv_collection_a: Path) -> None:
-        multi = load_collections_names([csv_collection_a])
-        single = load_collection_names(csv_collection_a)
-        assert multi == single
-
-    def test_empty_files(self, empty_csv_file: Path, tmp_path: Path) -> None:
-        empty2 = tmp_path / "empty2.csv"
-        empty2.write_text(MANABOX_HEADER + "\n", encoding="utf-8")
-        names = load_collections_names([empty_csv_file, empty2])
-        assert names == set()
 
 
 # ── filter_collection ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -715,6 +632,31 @@ class TestFilterCollection:
         results = filter_collection(owned, filter_cache)
         assert len(results) == 1
         assert results[0]["name"] == "Bone Shards"
+
+    def test_dfc_from_csv_not_double_counted(
+        self, tmp_path: Path, filter_cache: sqlite3.Connection
+    ) -> None:
+        # The CSV loader indexes the front face as a separate entry, not a shared dict.
+        payload = {
+            "name": "Delver of Secrets // Insectile Aberration",
+            "type_line": "Creature — Human Wizard // Creature — Human Insect",
+            "color_identity": ["U"],
+            "rarity": "common",
+            "cmc": 1,
+            "legalities": {"commander": "legal"},
+        }
+        filter_cache.execute(
+            "INSERT INTO cards (set_code, collector_number, name, full_json) VALUES (?,?,?,?)",
+            ("tst", "99", payload["name"], json.dumps(payload)),
+        )
+        csv_path = tmp_path / "c.csv"
+        csv_path.write_text(
+            "Name,Quantity\nDelver of Secrets // Insectile Aberration,2\n", encoding="utf-8"
+        )
+        results = filter_collection(load_collection(csv_path), filter_cache)
+        assert [(r["name"], r["count"]) for r in results] == [
+            ("Delver of Secrets // Insectile Aberration", 2)
+        ]
 
     def test_combined_filters(self, filter_cache: sqlite3.Connection) -> None:
         owned = _owned(

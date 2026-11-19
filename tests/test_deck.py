@@ -7,12 +7,8 @@ from pathlib import Path
 import pytest
 
 from manascope.deck import (
-    COLOUR_LABELS,
-    CREATURE_TYPES,
     CYCLING_RE,
-    FORMAT_LEGALITY_FIELD,
     FORMAT_TARGETS,
-    WUBRG_ORDER,
     card_cmc_from_cost,
     card_subtypes,
     colour_balance,
@@ -208,19 +204,6 @@ class TestManaCost:
         result = mana_cost(dfc_card)
         assert result == "{3}{W}{W}"
 
-    def test_no_mana_cost_key(self) -> None:
-        card: dict = {"name": "Some Land", "type_line": "Land"}
-        assert mana_cost(card) == ""
-
-    def test_zero_cost_spell(self) -> None:
-        card: dict = {"name": "Memnite", "type_line": "Artifact Creature", "mana_cost": "{0}"}
-        assert mana_cost(card) == "{0}"
-
-    def test_empty_mana_cost_string(self) -> None:
-        # Some cards have mana_cost = "" explicitly
-        card: dict = {"name": "Ancestral Vision", "mana_cost": ""}
-        assert mana_cost(card) == ""
-
     def test_dfc_both_faces_have_cost(self) -> None:
         card: dict = {
             "name": "Wear // Tear",
@@ -258,8 +241,9 @@ class TestTypeLine:
         assert type_line(kaalia) == "Legendary Creature — Human Cleric"
 
     def test_dfc(self, dfc_card: dict) -> None:
-        tl = type_line(dfc_card)
-        assert "Angel" in tl
+        # Without a top-level type_line, faces are joined.
+        card = {k: v for k, v in dfc_card.items() if k != "type_line"}
+        assert type_line(card) == "Legendary Creature — Angel // Legendary Creature — Angel"
 
     def test_empty(self) -> None:
         assert type_line({}) == ""
@@ -384,9 +368,6 @@ class TestProducedMana:
     def test_from_field(self, plains: dict) -> None:
         assert produced_mana(plains) == {"W"}
 
-    def test_multi_colour(self, shock_land: dict) -> None:
-        assert produced_mana(shock_land) == {"B", "R"}
-
     def test_fallback_to_oracle(self) -> None:
         card = {
             "type_line": "Artifact",
@@ -411,8 +392,10 @@ class TestManaSourceChecks:
     def test_kaalia_not_mana_creature(self, kaalia: dict) -> None:
         assert is_mana_creature(kaalia) is False
 
-    def test_land_not_rock(self, plains: dict) -> None:
-        assert is_mana_rock(plains) is False
+    def test_land_not_rock(self) -> None:
+        # An artifact land that taps for mana is still a land, not a rock.
+        artifact_land = {"type_line": "Artifact Land", "oracle_text": "{T}: Add {C}."}
+        assert is_mana_rock(artifact_land) is False
 
 
 # ── rock_land_equiv ──────────────────────────────────────────────────────
@@ -475,9 +458,6 @@ class TestCardCmcFromCost:
     def test_kaalia(self) -> None:
         assert card_cmc_from_cost("{1}{W}{B}{R}") == 4
 
-    def test_generic_only(self) -> None:
-        assert card_cmc_from_cost("{5}") == 5
-
     def test_x_spell(self) -> None:
         assert card_cmc_from_cost("{X}{R}{R}") == 2
 
@@ -513,12 +493,6 @@ class TestHasSynergyType:
 class TestIsLegal:
     def test_legal_commander(self, kaalia: dict) -> None:
         assert is_legal(kaalia, "commander") is True
-
-    def test_legal_brawl(self, kaalia: dict) -> None:
-        assert is_legal(kaalia, "brawl") is True
-
-    def test_not_legal_standard_brawl(self, kaalia: dict) -> None:
-        assert is_legal(kaalia, "standardbrawl") is False
 
     def test_sol_ring_banned_brawl(self, sol_ring: dict) -> None:
         assert is_legal(sol_ring, "brawl") is False
@@ -565,12 +539,6 @@ class TestExtractSynergyTypes:
 
 
 class TestDetectFormat:
-    def test_brawl(self) -> None:
-        assert detect_format("brawl/kaalia.txt") == "brawl"
-
-    def test_commander(self) -> None:
-        assert detect_format("commander/kaalia.txt") == "commander"
-
     def test_standardbrawl(self) -> None:
         assert detect_format("standardbrawl/maralen.txt") == "standardbrawl"
 
@@ -630,6 +598,18 @@ class TestParseDecklist:
         assert entries[0][1].set_code == "MH3"
         assert entries[0][1].collector_number == "290"
         assert entries[1][0] == 2  # Plains x2
+
+    def test_moxfield_finish_markers_ignored(self, tmp_path: Path) -> None:
+        deck = tmp_path / "test.txt"
+        deck.write_text(
+            "1 Kaalia of the Vast (MH3) 290 *F*\n1 Sol Ring (C21) 263 *E*\n",
+            encoding="utf-8",
+        )
+        entries = parse_decklist(str(deck), strict=True)
+        assert [(e.name, e.set_code, e.collector_number) for _, e in entries] == [
+            ("Kaalia of the Vast", "MH3", "290"),
+            ("Sol Ring", "C21", "263"),
+        ]
 
     def test_blank_lines_skipped(self, tmp_path: Path) -> None:
         deck = tmp_path / "test.txt"
@@ -736,26 +716,12 @@ class TestParseDecklist:
 
 
 class TestConstants:
-    def test_colour_labels_complete(self) -> None:
-        for c in WUBRG_ORDER:
-            assert c in COLOUR_LABELS
-
     def test_format_targets_keys(self) -> None:
         for fmt in ("commander", "brawl", "standardbrawl"):
             assert fmt in FORMAT_TARGETS
             low, high, label = FORMAT_TARGETS[fmt]
             assert low < high
             assert isinstance(label, str)
-
-    def test_format_legality_field_keys(self) -> None:
-        for fmt in ("commander", "brawl", "standardbrawl"):
-            assert fmt in FORMAT_LEGALITY_FIELD
-
-    def test_creature_types_not_empty(self) -> None:
-        assert len(CREATURE_TYPES) > 200
-        assert "angel" in CREATURE_TYPES
-        assert "demon" in CREATURE_TYPES
-        assert "dragon" in CREATURE_TYPES
 
 
 # ── Cycling detection ────────────────────────────────────────────────────

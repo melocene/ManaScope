@@ -54,9 +54,8 @@ def _card_to_json(
     """Build a compact, agent-friendly dict from a Scryfall card.
 
     Pass ``conn`` (an open Scryfall cache connection) to populate the
-    Arena-specific fields ``on_arena`` and ``arena_rarity``. Without it,
-    these are reported as ``False``/``None`` since paper-only printings
-    can't be distinguished from "never primed".
+    Arena-specific fields ``on_arena`` and ``arena_rarity``; without it they
+    are omitted.
 
     Set ``minimal=True`` to drop verbose fields (oracle_text, colors,
     rarity, power/toughness/loyalty, notable_types, land_equiv,

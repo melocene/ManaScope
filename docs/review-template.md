@@ -1,6 +1,6 @@
 # Deck Review Template
 
-Keep reviews terse, human-readable, and focused on decisions. Do not include full decklists or full EDHREC lists.
+Keep reviews terse and human-readable. The user decides what to change: give them the evidence and tradeoffs to choose, not verdicts. Do not include full decklists or full EDHREC lists.
 
 ```markdown
 # <Commander> — <Format> Review
@@ -24,7 +24,7 @@ Keep reviews terse, human-readable, and focused on decisions. Do not include ful
 <table: Card | Arena Set | Rarity | Why — only cards with on_arena=true>
 
 ## Proposed Swaps
-<table: Priority | OUT | IN | Why. Every proposed swap must name both the cut and the add. If there is no concrete cut, list the card under flex/bench considerations instead of calling it a swap.>
+<table: Priority | OUT | IN | Evidence | Tradeoff. Evidence: lift/inclusion for both cards and the role each fills per its oracle text. Tradeoff: what the deck gives up. These are options, not requirements. Every proposed swap must name both the cut and the add. If there is no concrete cut, list the card under flex/bench considerations instead of calling it a swap.>
 
 ## What Changed vs. Previous Pass
 <bullet list of OUT → IN swaps with reasons; omit on first pass>
@@ -36,8 +36,11 @@ Keep reviews terse, human-readable, and focused on decisions. Do not include ful
 <table of EDHREC top-N picks the user owns but deliberately left out>
 
 ## Wishlist (future rare/mythic targets)
-<ranked list of unowned high-lift cards that need rare/mythic wildcards; cite lift as `N.Nx`, never as synergy %>
+<ranked list of unowned high-lift cards that need rare/mythic wildcards; cite lift as `N.Nx` (never as synergy %) with inclusion>
 
-## Final Verdict
-<one paragraph + path to decklist file>
+## Questions for You
+<preferences that would change a recommendation, e.g. a favourite card or speed vs. value; omit if none>
+
+## Summary
+<one paragraph: where the deck stands and the main options, + path to decklist file>
 ```

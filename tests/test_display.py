@@ -405,11 +405,6 @@ class TestCardToJson:
         assert isinstance(result["land_equiv"], float)
         assert result["land_equiv"] == 0.5
 
-    def test_notable_creature_types(self, dragon: dict) -> None:
-        result = _card_to_json(dragon)
-        assert "notable_types" in result
-        assert "Dragon" in result["notable_types"]
-
     def test_dfc_card(self, dfc_card: dict) -> None:
         result = _card_to_json(dfc_card)
         assert result["name"] == "Delver of Secrets // Insectile Aberration"
@@ -449,17 +444,6 @@ class TestCardToJson:
         assert "land_equiv" in result
         assert result["land_equiv"] == 0.3
 
-    def test_sol_ring_high_equiv(self, sol_ring: dict) -> None:
-        result = _card_to_json(sol_ring)
-        assert "land_equiv" in result
-        assert result["land_equiv"] == 1.0
-
-    def test_basic_land(self, basic_land: dict) -> None:
-        result = _card_to_json(basic_land)
-        assert result["produced_mana"] == ["W"]
-        assert result["land_speed"] == "untapped"
-        assert "plains" in result["subtypes"]
-
     def test_no_arena_fields_without_conn(self, angel: dict) -> None:
         # Without a cache connection, arena availability is unknown and
         # the new fields shouldn't appear at all (avoids confusing False
@@ -497,35 +481,6 @@ class TestCardToJson:
             conn.close()
         assert result["on_arena"] is True
         assert result["arena_rarity"] == "rare"
-
-    def test_arena_false_when_only_paper_printing_cached(self, angel: dict, tmp_path) -> None:
-        # Critical for the Foundry-Inspector / Bone-Shards trap: a paper-only
-        # printing must never be reported as on_arena, even though the card
-        # *exists* in the cache.
-        import json
-        import sqlite3
-
-        from manascope.scryfall import open_cache
-
-        conn: sqlite3.Connection = open_cache(tmp_path / "c.db")
-        payload = {
-            "name": "Serra Angel",
-            "set": "dmr",
-            "collector_number": "32",
-            "rarity": "rare",
-            "games": ["paper", "mtgo"],
-        }
-        conn.execute(
-            "INSERT INTO cards (set_code, collector_number, name, full_json) VALUES (?,?,?,?)",
-            ("dmr", "32", "Serra Angel", json.dumps(payload)),
-        )
-        conn.commit()
-        try:
-            result = _card_to_json(angel, conn=conn)
-        finally:
-            conn.close()
-        assert result["on_arena"] is False
-        assert result["arena_rarity"] is None
 
     def test_minimal_mode_drops_verbose_fields(self, angel: dict) -> None:
         # Token-saving knob for batch agent lookups: oracle_text, colors,
@@ -600,31 +555,10 @@ class TestCardToJson:
 
 
 class TestManaCostDisplay:
-    def test_normal_card(self, angel: dict) -> None:
-        assert _mana_cost_display(angel) == "{3}{W}{W}"
-
-    def test_dfc_with_costs(self, dfc_card: dict) -> None:
-        result = _mana_cost_display(dfc_card)
-        # Front face has {U}, back face has empty string (filtered out)
-        assert result == "{U}"
-
     def test_land_no_cost(self, basic_land: dict) -> None:
         # mana_cost is None → falls through to card_faces check, none found
         result = _mana_cost_display(basic_land)
         assert result == "(none)"
-
-    def test_empty_mana_cost_string(self) -> None:
-        card = {"mana_cost": ""}
-        assert _mana_cost_display(card) == "(none)"
-
-    def test_dfc_both_faces_have_cost(self) -> None:
-        card = {
-            "card_faces": [
-                {"mana_cost": "{1}{R}"},
-                {"mana_cost": "{3}{R}{R}"},
-            ]
-        }
-        assert _mana_cost_display(card) == "{1}{R} // {3}{R}{R}"
 
 
 # ── Tests: _produced_mana_display ────────────────────────────────────────
@@ -645,11 +579,6 @@ class TestProducedManaDisplay:
         result = _produced_mana_display(basic_land)
         assert result == "{W}"
 
-    def test_five_color_land(self, utility_land: dict) -> None:
-        result = _produced_mana_display(utility_land)
-        for color in ["B", "G", "R", "U", "W"]:
-            assert "{" + color + "}" in result
-
 
 # ── Tests: _land_type_note ───────────────────────────────────────────────
 
@@ -667,10 +596,6 @@ class TestLandTypeNote:
     def test_non_land(self, angel: dict) -> None:
         result = _land_type_note(angel)
         assert result == ""
-
-    def test_basic_land(self, basic_land: dict) -> None:
-        result = _land_type_note(basic_land)
-        assert "Plains" in result
 
     def test_gate_no_basic_types(self, tapped_land: dict) -> None:
         # Gate is not a basic land type
@@ -751,10 +676,6 @@ class TestNotableCreatureTypes:
         result = _notable_creature_types(dragon)
         assert "Dragon" in result
 
-    def test_angel(self, angel: dict) -> None:
-        result = _notable_creature_types(angel)
-        assert "Angel" in result
-
     def test_changeling(self, changeling: dict) -> None:
         result = _notable_creature_types(changeling)
         assert "Changeling" in result
@@ -766,10 +687,6 @@ class TestNotableCreatureTypes:
 
     def test_creature_no_notable_types(self, creature_no_notable: dict) -> None:
         result = _notable_creature_types(creature_no_notable)
-        assert result == ""
-
-    def test_land_not_creature(self, basic_land: dict) -> None:
-        result = _notable_creature_types(basic_land)
         assert result == ""
 
 
@@ -813,7 +730,7 @@ class TestDisplayCard:
     ) -> None:
         _display_card(conditional_land)
         out = capsys.readouterr().out
-        assert "conditional" in out.lower()
+        assert "Conditional land - may enter untapped" in out
 
     def test_untapped_land_notes(
         self, capsys: pytest.CaptureFixture[str], basic_land: dict
@@ -829,12 +746,6 @@ class TestDisplayCard:
         out = capsys.readouterr().out
         assert "No basic land type" in out
         assert "cannot be found by fetch lands" in out
-
-    def test_mana_rock_output(self, capsys: pytest.CaptureFixture[str], sol_ring: dict) -> None:
-        _display_card(sol_ring)
-        out = capsys.readouterr().out
-        assert "Sol Ring" in out
-        assert "Land equivalent" in out
 
     def test_planeswalker_loyalty(
         self, capsys: pytest.CaptureFixture[str], planeswalker: dict

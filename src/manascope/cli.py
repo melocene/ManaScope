@@ -643,7 +643,7 @@ def _fix_decklist_printings(
 
         new_set = card.get("set", set_code).upper()
         new_cn = card.get("collector_number", cn)
-        new_line = f"{qty} {name} ({new_set}) {new_cn}"
+        new_line = f"{qty} {name} ({new_set}) {new_cn}{m.group('markers')}"
         replacements.append({"old": stripped, "new": new_line})
         new_lines.append(new_line)
 
@@ -781,14 +781,10 @@ def collection(
     import json as json_mod
 
     from manascope import scryfall as sc
-    from manascope.collection import (
-        filter_collection,
-        load_collection,
-        load_collections,
-    )
+    from manascope.collection import filter_collection, load_collections
 
     paths = [Path(p) for p in collection]
-    owned = load_collections(paths) if len(paths) > 1 else load_collection(paths[0])
+    owned = load_collections(paths)
 
     conn = sc.open_cache(cache)
     try:
@@ -1019,6 +1015,7 @@ def edhrec(
                     "name": c.name,
                     **c.score_fields,
                     "inclusion": c.inclusion_pct,
+                    **({"staple": True} if c.is_staple else {}),
                     "category": c.category,
                 }
                 for c in ec.all_recommended_cards(result)[:top]

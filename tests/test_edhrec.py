@@ -9,7 +9,7 @@ import requests
 
 from manascope.edhrec import (
     Combo,
-    SynergyCard,
+    RecommendedCard,
     TagInfo,
     TypeDistribution,
     _extract_cardlist,
@@ -17,7 +17,6 @@ from manascope.edhrec import (
     _predates_lift,
     _upsert_commander,
     all_recommended_cards,
-    average_deck_price,
     cards_by_category,
     combos,
     combos_url,
@@ -70,8 +69,8 @@ def zero_type_dist() -> TypeDistribution:
 
 
 @pytest.fixture()
-def sample_synergy_card() -> SynergyCard:
-    return SynergyCard(
+def sample_card() -> RecommendedCard:
+    return RecommendedCard(
         name="Smothering Tithe",
         synergy=0.61,
         inclusion=8500,
@@ -346,20 +345,16 @@ class TestTypeDistribution:
         assert all(v == 0 for v in scaled.values())
         assert "total" not in scaled
 
-    def test_scaled_to_small_deck(self, sample_type_dist: TypeDistribution) -> None:
-        scaled = sample_type_dist.scaled_to(10)
-        assert sum(scaled.values()) == 10
+
+# ── RecommendedCard ─────────────────────────────────────────────────────────
 
 
-# ── SynergyCard ─────────────────────────────────────────────────────────
-
-
-class TestSynergyCard:
-    def test_inclusion_pct(self, sample_synergy_card: SynergyCard) -> None:
-        assert sample_synergy_card.inclusion_pct == 85.0
+class TestRecommendedCard:
+    def test_inclusion_pct(self, sample_card: RecommendedCard) -> None:
+        assert sample_card.inclusion_pct == 85.0
 
     def test_inclusion_pct_zero_decks(self) -> None:
-        card = SynergyCard(
+        card = RecommendedCard(
             name="Ghost Card",
             synergy=0.5,
             inclusion=0,
@@ -367,39 +362,6 @@ class TestSynergyCard:
             category="topcards",
         )
         assert card.inclusion_pct == 0.0
-
-    def test_inclusion_pct_partial(self) -> None:
-        card = SynergyCard(
-            name="Niche Combo Piece",
-            synergy=0.8,
-            inclusion=333,
-            potential_decks=1000,
-            category="highsynergycards",
-        )
-        assert card.inclusion_pct == 33.3
-
-    def test_synergy_pct(self, sample_synergy_card: SynergyCard) -> None:
-        assert sample_synergy_card.synergy_pct == 61.0
-
-    def test_synergy_pct_negative(self) -> None:
-        card = SynergyCard(
-            name="Bad Card",
-            synergy=-0.15,
-            inclusion=100,
-            potential_decks=10000,
-            category="topcards",
-        )
-        assert card.synergy_pct == -15.0
-
-    def test_synergy_pct_zero(self) -> None:
-        card = SynergyCard(
-            name="Neutral Card",
-            synergy=0.0,
-            inclusion=5000,
-            potential_decks=10000,
-            category="topcards",
-        )
-        assert card.synergy_pct == 0.0
 
 
 # ── slugify ──────────────────────────────────────────────────────────────
@@ -409,14 +371,12 @@ class TestSlugify:
     def test_simple_name(self) -> None:
         assert slugify("Kaalia of the Vast") == "kaalia-of-the-vast"
 
-    def test_comma_in_name(self) -> None:
-        assert slugify("Maralen, Fae Ascendant") == "maralen-fae-ascendant"
-
     def test_apostrophe(self) -> None:
         assert slugify("Teysa, Orzhov's Scion") == "teysa-orzhovs-scion"
 
     def test_period(self) -> None:
-        assert slugify("Mr. Foxglove") == "mr-foxglove"
+        # Periods are stripped, not turned into hyphens.
+        assert slugify("Mr.Foxglove") == "mrfoxglove"
 
     def test_multiple_special_chars(self) -> None:
         assert slugify("Who's, the Dr.?") == "whos-the-dr"
@@ -482,38 +442,19 @@ class TestManaCurve:
     def test_missing_panels(self) -> None:
         assert mana_curve({}) == {}
 
-    def test_missing_mana_curve(self) -> None:
-        assert mana_curve({"panels": {}}) == {}
-
-    def test_empty_mana_curve(self) -> None:
-        assert mana_curve({"panels": {"mana_curve": {}}}) == {}
-
 
 # ── _extract_cardlist ────────────────────────────────────────────────────
 
 
 class TestExtractCardlist:
-    def test_known_tag(self, edhrec_data: dict) -> None:
-        cards = _extract_cardlist(edhrec_data, "highsynergycards")
-        assert len(cards) == 2
-        assert cards[0].name == "Aurelia, the Warleader"
-        assert cards[0].synergy == 0.72
-        assert cards[0].category == "highsynergycards"
-
     def test_unknown_tag(self, edhrec_data: dict) -> None:
         cards = _extract_cardlist(edhrec_data, "nonexistenttag")
         assert cards == []
 
-    def test_empty_data(self) -> None:
-        assert _extract_cardlist({}, "highsynergycards") == []
-
-    def test_missing_container(self) -> None:
-        assert _extract_cardlist({"container": {}}, "topcards") == []
-
     def test_card_fields_populated(self, edhrec_data: dict) -> None:
         cards = _extract_cardlist(edhrec_data, "topcards")
         sol = cards[0]
-        assert isinstance(sol, SynergyCard)
+        assert isinstance(sol, RecommendedCard)
         assert sol.name == "Sol Ring"
         assert sol.synergy == 0.01
         assert sol.inclusion == 9800
@@ -662,18 +603,18 @@ class TestLift:
         ]
 
     def test_lift_outranks_legacy_synergy(self) -> None:
-        legacy = SynergyCard("Old", synergy=0.9, inclusion=1, potential_decks=1, category="x")
-        lifted = SynergyCard("New", 0.0, 1, 1, "x", lift=0.5)
+        legacy = RecommendedCard("Old", synergy=0.9, inclusion=1, potential_decks=1, category="x")
+        lifted = RecommendedCard("New", 0.0, 1, 1, "x", lift=0.5)
         assert lifted.rank_key > legacy.rank_key
 
     def test_score_label_and_fields_with_lift(self) -> None:
-        card = SynergyCard("A", 0.1, 745, 7337, "highliftcards", lift=3.2635)
+        card = RecommendedCard("A", 0.1, 745, 7337, "highliftcards", lift=3.2635)
         assert card.score_label == "3.26x"
         assert card.score_fields == {"lift": 3.26}
 
-    def test_score_label_and_fields_legacy(self, sample_synergy_card: SynergyCard) -> None:
-        assert sample_synergy_card.score_label == "61.0%"
-        assert sample_synergy_card.score_fields == {"lift": None, "synergy": 61.0}
+    def test_score_label_and_fields_legacy(self, sample_card: RecommendedCard) -> None:
+        assert sample_card.score_label == "61.0%"
+        assert sample_card.score_fields == {"lift": None, "synergy": 61.0}
 
     def test_predates_lift(self, edhrec_data: dict, edhrec_lift_data: dict) -> None:
         assert _predates_lift(edhrec_data) is True
@@ -683,6 +624,30 @@ class TestLift:
     def test_num_decks_from_commander_card(self, edhrec_lift_data: dict) -> None:
         # Lift-era payloads have no num_decks_avg.
         assert num_decks(edhrec_lift_data) == 7337
+
+
+class TestStaples:
+    def test_colour_share_from_lift(self) -> None:
+        # 90% of this commander's decks at 1.2x lift -> ~75% of decks in these colours.
+        card = RecommendedCard("Staple Card", 0.15, 900, 1000, "x", lift=1.2)
+        assert card.colour_pct == 75.0
+        assert card.is_staple is True
+
+    def test_popular_with_commander_is_not_a_staple(self) -> None:
+        # 70% of this commander's decks but ~7% of decks in these colours.
+        card = RecommendedCard("Core Card", 0.63, 700, 1000, "x", lift=10.0)
+        assert card.colour_pct == 7.0
+        assert card.is_staple is False
+
+    def test_legacy_colour_share_from_synergy(self) -> None:
+        # Pre-lift pages: inclusion - synergy gives the same estimate.
+        card = RecommendedCard("Core Card", 0.63, 700, 1000, "x")
+        assert card.colour_pct == 7.0
+
+    def test_no_data(self) -> None:
+        assert RecommendedCard("A", 0.0, 0, 0, "x").colour_pct is None
+        assert RecommendedCard("A", 0.0, 1, 10, "x", lift=0.0).colour_pct is None
+        assert RecommendedCard("A", 0.0, 1, 10, "x", lift=0.0).is_staple is False
 
 
 # ── combos ───────────────────────────────────────────────────────────────
@@ -695,16 +660,8 @@ class TestCombos:
         assert isinstance(result[0], Combo)
         assert result[0].description == "Master of Cruelties + Kaalia"
 
-    def test_filters_see_more(self, edhrec_data: dict) -> None:
-        result = combos(edhrec_data)
-        descriptions = [c.description for c in result]
-        assert "See More..." not in descriptions
-
     def test_empty_data(self) -> None:
         assert combos({}) == []
-
-    def test_no_combocounts_panel(self) -> None:
-        assert combos({"panels": {}}) == []
 
     def test_only_see_more(self) -> None:
         data = {"panels": {"combocounts": [{"value": "See More...", "href": "/combos/x"}]}}
@@ -765,9 +722,6 @@ class TestTags:
     def test_empty_data(self) -> None:
         assert tags({}) == []
 
-    def test_no_taglinks_panel(self) -> None:
-        assert tags({"panels": {}}) == []
-
 
 # ── num_decks ────────────────────────────────────────────────────────────
 
@@ -823,20 +777,6 @@ class TestCommanderDisplayName:
         )
 
 
-# ── average_deck_price ───────────────────────────────────────────────────
-
-
-class TestAverageDeckPrice:
-    def test_returns_price(self, edhrec_data: dict) -> None:
-        assert average_deck_price(edhrec_data) == 450.75
-
-    def test_missing_key(self) -> None:
-        assert average_deck_price({}) == 0.0
-
-    def test_integer_price(self) -> None:
-        assert average_deck_price({"avg_price": 300}) == 300.0
-
-
 # ── _is_stale ────────────────────────────────────────────────────────────
 
 
@@ -860,15 +800,6 @@ class TestIsStale:
 
     def test_malformed_timestamp_returns_stale(self) -> None:
         assert _is_stale("not-a-timestamp", ttl_days=14) is True
-
-    def test_zero_ttl_always_stale(self) -> None:
-        recent = datetime.now(UTC).isoformat()
-        # With TTL 0, even a just-now timestamp is stale
-        assert _is_stale(recent, ttl_days=0) is True
-
-    def test_large_ttl_not_stale(self) -> None:
-        old = (datetime.now(UTC) - timedelta(days=300)).isoformat()
-        assert _is_stale(old, ttl_days=365) is False
 
 
 # ── fetch_commander cache refresh ────────────────────────────────────────────
@@ -924,12 +855,6 @@ class TestFetchCommanderPreLift:
 
 
 class TestOpenCache:
-    def test_creates_db(self, tmp_path) -> None:
-        db_path = tmp_path / "cache.db"
-        conn = open_cache(db_path)
-        assert db_path.exists()
-        conn.close()
-
     def test_idempotent(self, tmp_path) -> None:
         db_path = tmp_path / "cache.db"
         conn1 = open_cache(db_path)

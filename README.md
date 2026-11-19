@@ -73,7 +73,7 @@ Pass the path to any command that accepts `--collection`; repeat the flag to mer
 
 ### Decklist Format
 
-Decklists are plain `.txt` files stored under `decks/<format>/`.
+Decklists are plain `.txt` files stored under `decks/<format>/`. Each line is `<qty> <name> (<set>) <collector#>`; trailing finish markers from Moxfield exports, such as `*F*` (foil), are accepted and ignored.
 
 **Commander (Paper / MTGO)**
 - No section headers. The first line is the commander.
@@ -103,7 +103,7 @@ uv run manascope edhrec "Krenko, Mob Boss"
 uv run manascope analyze --decklist decks/commander/krenko.txt
 ```
 
-**`review`** — Find gaps between your deck and EDHREC recommendations, ranked by lift. Pass `--collection` to split results into cards you own vs. cards you don't.
+**`review`** — Find gaps between your deck and EDHREC recommendations, ranked by lift, and review your current cards: lowest lift, staples, and cards EDHREC doesn't list for your commander. Pass `--collection` to split results into cards you own vs. cards you don't.
 ```bash
 uv run manascope review --decklist decks/commander/krenko.txt
 uv run manascope review --decklist decks/commander/krenko.txt --collection collections/Primary.csv
@@ -137,11 +137,13 @@ uv run manascope hand --decklist decks/commander/krenko.txt --trials 1000
 
 With these commands you can identify mana base problems, see which high-lift cards you're missing (and which you already own), and confirm you can build the deck before sleeving up.
 
-> **About lift:** EDHREC replaced its synergy percentage with [lift](https://edhrec.com/articles/from-synergy-to-lift-the-math-behind-edhrecs-new-era), a multiplier showing how often decks with this commander run a card compared with random chance (`1.0x` = no association, `3.0x` = three times as often, below `1.0x` = less often). ManaScope reports lift as `N.NNx`. Cached EDHREC pages from before the change show legacy synergy % until they are refreshed.
+> **About lift:** EDHREC replaced its synergy percentage with lift. See EDHREC's [From Synergy to Lift](https://edhrec.com/articles/from-synergy-to-lift-the-math-behind-edhrecs-new-era) for what it measures and how to read it. ManaScope shows lift as `N.NNx`. Staples (cards most decks in your commander's colours run, such as Sol Ring and Arcane Signet) can't have high lift, so lift can't tell you whether they fit your deck; `review` lists them separately, and being a staple doesn't make a card an automatic include. When one commander makes up much of its colours' decks, as popular precons often do, lift is compressed for every card and `review` says so. Cards EDHREC doesn't list for your commander have no data at all and are often deliberate picks. All of this is statistics to inform your choices, not verdicts. Cached EDHREC pages from before the change show legacy synergy % until they are refreshed.
 
 ### The AI Workflow
 
 Deciding *which specific card* comes out for *which specific card* coming in—and *why*—is inherently interpretive work. That's where an LLM adds the most value on top of ManaScope's raw data.
+
+The final call is always yours. ManaScope and any agent see only EDHREC statistics and card data, not how you play or which cards you enjoy, so agent reviews present swaps as options with the evidence and tradeoffs behind them.
 
 **`pipeline`** — Runs `analyze` and `review` together and outputs a single compact JSON payload built for AI consumption. Pass `--collection` to include ownership data.
 ```bash

@@ -62,7 +62,7 @@ Other useful flags: `--format commander|brawl|standardbrawl`, `--top N`, `--stri
 5. `just manascope pipeline --decklist <path> --collection <csv>`
 
 ### Decklist format
-- Every line: `<qty> <name> (<set>) <collector#>`.
+- Every line: `<qty> <name> (<set>) <collector#>`. Keep any trailing finish marker (e.g. Moxfield's `*F*`) when editing a line; ManaScope ignores it.
 - Commander (paper): commander on the first line, no headers, full DFC names, exactly 100 cards.
 - Brawl / Standard Brawl: `Commander` and `Deck` headers, front-face names only for DFCs, Sagas, and Adventures, exactly 100 / 60 cards.
 - After every deck edit, run `analyze --json` and confirm `cards.ok`.
@@ -81,8 +81,16 @@ Other useful flags: `--format commander|brawl|standardbrawl`, `--top N`, `--stri
 ### EDHREC lift
 - EDHREC replaced synergy % with **lift**: how often decks with this commander run the card compared with random chance. `1.0` = no association, `3.2` = 3.2x as often, below `1.0` = less often. It is a ratio, not a percentage.
 - Write it as `3.2x lift`; never call it "synergy" or show it as `%`.
-- Weigh lift with `inclusion`: high lift can be a niche pick. Staples like Sol Ring sit near `1.0` because everyone plays them, so low lift alone is not a cut signal.
+- Weigh lift with `inclusion` (% of this commander's decks): high lift can be a niche pick. A `staple` flag (computed by ManaScope; don't derive it yourself) marks cards most decks in the commander's colours run. Lift can't judge staples either way, so never cut or keep one on lift or popularity alone.
+- `review`/`pipeline` `cut_review` covers every nonland deck card: `lowest_lift`, `staples` (with `colour_share`, % of decks in these colours), and `not_on_edhrec`. Off-list cards have no EDHREC data and are often deliberate picks (owned substitutes, favourites), so that alone is never a cut reason.
+- `stats.lift_compressed: true` (or a `[Note]` line) means lift barely separates cards for this commander, usually a popular precon. Lean on inclusion and each card's role instead, and say so in the review.
 - `"lift": null` plus a `synergy` key means the cached page predates lift. Label it legacy synergy and never compare it with lift.
+
+### Recommendations
+- You see only EDHREC statistics and Scryfall card data (oracle text, rulings). You don't know the user's play style, preferences, or how cards have performed for them, so the user makes the call.
+- Back every suggestion with evidence the user can check: lift and inclusion for each card, the role it fills per its `oracle_text`, and the tradeoff (what the deck gives up).
+- Present swaps as options, not requirements; "no change" is a valid outcome. When a preference would change the call (a favourite card, speed vs. value), ask instead of assuming.
+- For adds, prefer owned cards that fill the same role (`collection --in-identity <CI> --type <kw>`) over unowned EDHREC picks; an unowned pick is a wishlist option, not a must-have. Without a collection, name the role a card fills so the user can look for their own alternatives.
 
 ### Review files
 - Save next to the deck as `<commander>-review.md` (e.g. `decks/brawl/greasefang-review.md`), following the sections in `docs/review-template.md`. Keep it terse.
